@@ -1,0 +1,32 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mycat-meme"
+version = "0.1.0"
+description = "把表情包换成我的猫 — 一个把热门表情包里的猫替换成你家猫的工具，由即梦 CLI 驱动"
+readme = "README.md"
+license = { text = "MIT" }
+authors = [{ name = "BENZEMA216" }]
+requires-python = ">=3.11"
+dependencies = [
+    "click>=8.1",
+    "Pillow>=10.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0",
+    "pytest-mock>=3.12",
+]
+
+[project.scripts]
+mycat-meme = "mycat_meme.cli:main"
+
+[project.urls]
+Homepage = "https://github.com/BENZEMA216/mycat-meme"
+Repository = "https://github.com/BENZEMA216/mycat-meme"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mycat_meme"]
