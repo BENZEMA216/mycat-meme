@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "mycat-meme"
-version = "0.2.0"
+version = "0.2.1"
 description = "把表情包换成我的猫 — 一个把热门表情包里的猫替换成你家猫的工具，由即梦 CLI 驱动"
 readme = "README.md"
 license = { text = "MIT" }

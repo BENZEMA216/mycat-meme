@@ -1,6 +1,8 @@
-"""Tests for the high-level GIF replacement pipeline.
+"""Tests for the high-level GIF replacement pipeline (v0.2.1).
 
-Mocks ffmpeg, dreamina, and HTTP download so the test runs offline in <1s.
+The v0.2.1 pipeline only makes one dreamina call (multimodal2video with
+[first_frame, cat] as the two --image inputs and motion_ref.mp4 as the
+--video input). image2image is no longer used.
 """
 from pathlib import Path
 
@@ -32,7 +34,7 @@ def _stub_pipeline(monkeypatch, captured: dict | None = None):
 
     def fake_extract(src, dest):
         Path(dest).parent.mkdir(parents=True, exist_ok=True)
-        Path(dest).write_bytes(b"fake png")
+        Path(dest).write_bytes(b"fake first frame png")
         return Path(dest)
 
     def fake_convert_to_mp4(src, dest):
@@ -42,20 +44,6 @@ def _stub_pipeline(monkeypatch, captured: dict | None = None):
 
     def fake_probe(path):
         return VideoMetadata(width=1280, height=720, duration_seconds=5.0)
-
-    def fake_image_replace(*, meme, cat, output, style):
-        Path(output).parent.mkdir(parents=True, exist_ok=True)
-        Path(output).write_bytes(b"fake replaced png")
-        if captured is not None:
-            captured["replace_meme"] = meme
-            captured["replace_cat"] = cat
-            captured["replace_style"] = style
-        return Path(output)
-
-    def fake_downscale(src, dest, max_width=1280):
-        Path(dest).parent.mkdir(parents=True, exist_ok=True)
-        Path(dest).write_bytes(b"fake jpeg")
-        return Path(dest)
 
     def fake_run_mm2v(**kwargs):
         if captured is not None:
@@ -91,8 +79,6 @@ def _stub_pipeline(monkeypatch, captured: dict | None = None):
     monkeypatch.setattr(gif_pipeline, "extract_first_frame", fake_extract)
     monkeypatch.setattr(gif_pipeline, "convert_to_mp4", fake_convert_to_mp4)
     monkeypatch.setattr(gif_pipeline, "probe_video", fake_probe)
-    monkeypatch.setattr(gif_pipeline, "image_replace", fake_image_replace)
-    monkeypatch.setattr(gif_pipeline, "_downscale_for_upload", fake_downscale)
     monkeypatch.setattr(gif_pipeline, "run_multimodal2video", fake_run_mm2v)
     monkeypatch.setattr(gif_pipeline, "parse_video_result", fake_parse)
     monkeypatch.setattr(gif_pipeline, "download_image", fake_download)
@@ -109,10 +95,31 @@ def test_replace_gif_happy_path(monkeypatch, tmp_path, fake_gif, fake_cat):
     assert result == output
     assert output.exists()
     assert output.read_bytes().startswith(b"GIF89a")
-    # Verify the orchestration touched every layer
     assert captured["downloaded_url"] == "https://example.com/result.mp4"
     assert captured["gif_fps"] == gif_pipeline.DEFAULT_OUTPUT_FPS
     assert captured["gif_max_width"] == gif_pipeline.DEFAULT_OUTPUT_MAX_WIDTH
+
+
+def test_replace_gif_passes_both_images_to_multimodal2video(monkeypatch, tmp_path, fake_gif, fake_cat):
+    """The v0.2.1 pipeline must pass [first_frame, cat] as the images list,
+    and motion_ref.mp4 as the videos list."""
+    captured: dict = {}
+    _stub_pipeline(monkeypatch, captured)
+
+    gif_pipeline.replace_gif(
+        gif=fake_gif, cat=fake_cat, output=tmp_path / "out.gif"
+    )
+    kwargs = captured["mm2v_kwargs"]
+    assert "images" in kwargs
+    images = kwargs["images"]
+    assert len(images) == 2
+    # The user's cat must be the SECOND image (the prompt references "第二张")
+    assert str(images[1]).endswith("cat.jpg") or str(images[1]) == str(fake_cat)
+    # First image is the extracted first frame from the GIF
+    assert "first" in str(images[0]).lower()
+
+    assert "videos" in kwargs
+    assert len(kwargs["videos"]) == 1
 
 
 def test_replace_gif_picks_video_supported_ratio(monkeypatch, tmp_path, fake_gif, fake_cat):
@@ -127,7 +134,7 @@ def test_replace_gif_picks_video_supported_ratio(monkeypatch, tmp_path, fake_gif
 
 
 def test_replace_gif_rounds_duration(monkeypatch, tmp_path, fake_gif, fake_cat):
-    """If the input is 5.042s, the duration sent should be 6 (ceil), within 4-15."""
+    """If the input is 5.042s, the duration sent should be 6 (ceil)."""
     captured: dict = {}
 
     def fake_probe(path):
@@ -183,6 +190,17 @@ def test_replace_gif_explicit_duration_overrides(monkeypatch, tmp_path, fake_gif
     assert captured["mm2v_kwargs"]["duration"] == 10
 
 
+def test_replace_gif_passes_poll_zero_to_multimodal2video(monkeypatch, tmp_path, fake_gif, fake_cat):
+    """v0.2.1 always passes poll_seconds=0 to multimodal2video so dreamina
+    just submits and we poll query_result ourselves (more reliable)."""
+    captured: dict = {}
+    _stub_pipeline(monkeypatch, captured)
+    gif_pipeline.replace_gif(
+        gif=fake_gif, cat=fake_cat, output=tmp_path / "out.gif"
+    )
+    assert captured["mm2v_kwargs"]["poll_seconds"] == 0
+
+
 def test_replace_gif_raises_if_gif_missing(tmp_path, fake_cat):
     with pytest.raises(FileNotFoundError):
         gif_pipeline.replace_gif(
@@ -210,7 +228,9 @@ def test_replace_gif_falls_back_to_wait_when_pending(monkeypatch, tmp_path, fake
     def raise_pending(stdout):
         raise Image2ImageStillPending(submit_id="abc", gen_status="querying")
 
-    def fake_wait(submit_id):
+    monkeypatch.setattr(gif_pipeline, "parse_video_result", raise_pending)
+
+    def fake_wait(submit_id, **kwargs):
         waited["submit_id"] = submit_id
         return VideoResult(
             submit_id=submit_id,
@@ -222,7 +242,6 @@ def test_replace_gif_falls_back_to_wait_when_pending(monkeypatch, tmp_path, fake
             format="mp4",
         )
 
-    monkeypatch.setattr(gif_pipeline, "parse_video_result", raise_pending)
     monkeypatch.setattr(gif_pipeline, "wait_for_video_result", fake_wait)
 
     output = tmp_path / "out.gif"

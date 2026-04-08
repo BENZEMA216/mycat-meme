@@ -42,6 +42,25 @@ from mycat_meme.errors import (
 
 DREAMINA_BINARY = "dreamina"
 
+# Substrings indicating a transient/retryable dreamina backend error.
+# These come from dreamina's own Go errors when its backend HTTP layer
+# drops connections. Used by the polling loops below to swallow blips.
+_TRANSIENT_ERROR_MARKERS = (
+    "context deadline exceeded",
+    "connection reset",
+    "i/o timeout",
+    "no such host",
+    "tls handshake",
+    "eof",
+    "broken pipe",
+    "temporarily unavailable",
+)
+
+
+def _is_transient_error(text: str) -> bool:
+    low = text.lower()
+    return any(m in low for m in _TRANSIENT_ERROR_MARKERS)
+
 
 class Image2ImageStillPending(MycatMemeError):
     """Raised by parse_image2image_result when dreamina returned a non-final
@@ -297,8 +316,8 @@ def parse_video_result(stdout: str) -> VideoResult:
 
 def build_multimodal2video_argv(
     *,
-    image: Path,
-    video: Path,
+    images: list[Path],
+    videos: list[Path] | None = None,
     prompt: str,
     duration: int,
     ratio: str,
@@ -309,34 +328,41 @@ def build_multimodal2video_argv(
     """Build argv for `dreamina multimodal2video`.
 
     Unlike image2image (which takes comma-joined `--images`), multimodal2video
-    uses **repeated** `--image` and `--video` flags (cobra stringArray).
+    uses **repeated** `--image` and `--video` flags (cobra stringArray) — pass
+    each path as a separate flag occurrence.
+
+    Args:
+        images: One or more local image paths. Up to 9 are accepted by dreamina.
+        videos: Zero or more local video paths. Up to 3 accepted.
+        prompt: Multimodal generation prompt.
+        duration: Output length in seconds (4-15).
+        ratio: From VIDEO_SUPPORTED_RATIOS.
+        model_version: One of the seedance2.0 family.
     """
-    return [
-        DREAMINA_BINARY,
-        "multimodal2video",
-        "--image",
-        str(Path(image).resolve()),
-        "--video",
-        str(Path(video).resolve()),
-        "--prompt",
-        prompt,
-        "--duration",
-        str(duration),
-        "--ratio",
-        ratio,
-        "--video_resolution",
-        video_resolution,
-        "--model_version",
-        model_version,
-        "--poll",
-        str(poll_seconds),
+    if not images:
+        raise ValueError("multimodal2video requires at least one image")
+    videos = list(videos or [])
+
+    argv = [DREAMINA_BINARY, "multimodal2video"]
+    for img in images:
+        argv += ["--image", str(Path(img).resolve())]
+    for vid in videos:
+        argv += ["--video", str(Path(vid).resolve())]
+    argv += [
+        "--prompt", prompt,
+        "--duration", str(duration),
+        "--ratio", ratio,
+        "--video_resolution", video_resolution,
+        "--model_version", model_version,
+        "--poll", str(poll_seconds),
     ]
+    return argv
 
 
 def run_multimodal2video(
     *,
-    image: Path,
-    video: Path,
+    images: list[Path],
+    videos: list[Path] | None = None,
     prompt: str,
     duration: int,
     ratio: str,
@@ -351,8 +377,8 @@ def run_multimodal2video(
         DreaminaCallFailed: on non-zero exit.
     """
     argv = build_multimodal2video_argv(
-        image=image,
-        video=video,
+        images=images,
+        videos=videos,
         prompt=prompt,
         duration=duration,
         ratio=ratio,
@@ -382,18 +408,24 @@ def wait_for_video_result(
     """Like wait_for_result, but parses the result as a video.
 
     Used after multimodal2video / image2video when the initial poll times out.
+    Swallows transient query_result network errors and keeps polling.
     """
     deadline = time.monotonic() + max_wait_seconds
+    last_stdout = ""
     while True:
-        stdout = run_query_result(submit_id)
         try:
-            return parse_video_result(stdout)
+            last_stdout = run_query_result(submit_id)
+            return parse_video_result(last_stdout)
         except Image2ImageStillPending:
             pass
+        except DreaminaCallFailed as e:
+            if not _is_transient_error(e.stderr):
+                raise
+            # transient: just keep polling
         if time.monotonic() >= deadline:
             raise OutputNotFound(
                 f"dreamina video task {submit_id!r} did not finish within "
-                f"{max_wait_seconds}s; last stdout: {stdout[:500]}"
+                f"{max_wait_seconds}s; last stdout: {last_stdout[:500]}"
             )
         time.sleep(poll_interval_seconds)
 
@@ -427,6 +459,8 @@ def wait_for_result(
 ) -> Image2ImageResult:
     """Poll `dreamina query_result` until the task succeeds or times out.
 
+    Swallows transient query_result network errors and keeps polling.
+
     Args:
         submit_id: The submit_id returned from a still-pending image2image call.
         max_wait_seconds: Hard upper bound on total wait time across polls.
@@ -437,43 +471,66 @@ def wait_for_result(
 
     Raises:
         OutputNotFound: if the task fails or times out.
-        DreaminaCallFailed / DreaminaNotInstalled: from underlying subprocess.
+        DreaminaCallFailed: on non-transient query_result errors.
+        DreaminaNotInstalled: from underlying subprocess.
     """
     deadline = time.monotonic() + max_wait_seconds
+    last_stdout = ""
     while True:
-        stdout = run_query_result(submit_id)
         try:
-            return parse_image2image_result(stdout)
+            last_stdout = run_query_result(submit_id)
+            return parse_image2image_result(last_stdout)
         except Image2ImageStillPending:
             pass  # keep waiting
+        except DreaminaCallFailed as e:
+            if not _is_transient_error(e.stderr):
+                raise
+            # transient: keep polling
         if time.monotonic() >= deadline:
             raise OutputNotFound(
                 f"dreamina task {submit_id!r} did not finish within "
-                f"{max_wait_seconds}s; last stdout: {stdout[:500]}"
+                f"{max_wait_seconds}s; last stdout: {last_stdout[:500]}"
             )
         time.sleep(poll_interval_seconds)
+
+
+_DOWNLOAD_MAX_ATTEMPTS = 4
+_DOWNLOAD_BACKOFF_SECONDS = 2.0
 
 
 def download_image(url: str, dest: Path) -> Path:
     """Download a remote image URL to `dest` on disk. Returns dest on success.
 
+    Retries up to _DOWNLOAD_MAX_ATTEMPTS times on transient network errors
+    (SSL EOF, connection reset, timeout). dreamina's CDN occasionally drops
+    HTTPS connections — empirically these resolve on retry.
+
     Raises:
-        OutputNotFound: if the download fails (network error, expired signature,
+        OutputNotFound: if all attempts fail (network error, expired signature,
             or non-2xx response).
     """
     dest = Path(dest)
     dest.parent.mkdir(parents=True, exist_ok=True)
     req = urllib.request.Request(url, headers={"User-Agent": _DOWNLOAD_USER_AGENT})
-    try:
-        with urllib.request.urlopen(req, timeout=120) as resp:
-            if resp.status >= 300:
-                raise OutputNotFound(
-                    f"download of {url!r} returned HTTP {resp.status}"
-                )
-            data = resp.read()
-    except urllib.error.URLError as e:
-        raise OutputNotFound(
-            f"failed to download dreamina result from {url!r}: {e}"
-        ) from e
-    dest.write_bytes(data)
-    return dest
+
+    last_err: Exception | None = None
+    for attempt in range(1, _DOWNLOAD_MAX_ATTEMPTS + 1):
+        try:
+            with urllib.request.urlopen(req, timeout=120) as resp:
+                if resp.status >= 300:
+                    raise OutputNotFound(
+                        f"download of {url!r} returned HTTP {resp.status}"
+                    )
+                data = resp.read()
+            dest.write_bytes(data)
+            return dest
+        except (urllib.error.URLError, OSError) as e:
+            last_err = e
+            if attempt == _DOWNLOAD_MAX_ATTEMPTS:
+                break
+            time.sleep(_DOWNLOAD_BACKOFF_SECONDS * attempt)
+
+    raise OutputNotFound(
+        f"failed to download dreamina result from {url!r} after "
+        f"{_DOWNLOAD_MAX_ATTEMPTS} attempts: {last_err}"
+    ) from last_err

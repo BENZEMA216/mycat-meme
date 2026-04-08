@@ -34,9 +34,9 @@
   </tr>
 </table>
 
-> v0.2 GIF 流水线：先用 `image2image` 替换首帧，再用即梦 `multimodal2video`（Seedance 2.0 系列）以原 GIF 为动作参考做整体动画化，最后转回 GIF。整个过程约 4-6 分钟。
+> v0.2.1 GIF 流水线：把原 GIF 的首帧 + 你家猫照片 + 原 GIF 转的 mp4（动作参考）一次性丢给即梦 `multimodal2video`（Seedance 2.0 fast），让模型同时拿到场景、外观、动作三种参考，输出 mp4 后转回 GIF。整个过程约 4-6 分钟，一次调用。
 >
-> ⚠️ **已知限制**：当原 GIF 的猫是剪影或暗色场景时，视频模型容易把"新猫的外观"权重压低，回归到原视频的视觉风格。最佳效果是原 GIF 里的猫光照清晰、特征明显的情况。后续 v0.2.1 会调 prompt 改善这点。
+> v0.2 时是先 image2image 替换首帧再 multimodal2video，结果模型容易在视频步骤把猫"褪色"成剪影。v0.2.1 砍掉了 image2image 中转步骤，直接让多模态模型自己分配三个 reference 的权重，**剪影/暗色场景的猫现在也能稳定输出新猫的毛色花纹**。
 
 ## 这是什么
 
@@ -102,13 +102,12 @@ mycat-meme replace-gif [OPTIONS] GIF CAT
 
 Options:
   -o, --output PATH           Where to write the result GIF.  [required]
-  --style [default]           Prompt style for first-frame replacement.
   --model [seedance2.0fast|seedance2.0|seedance2.0_vip|seedance2.0fast_vip]
                               dreamina seedance video model.  [default: seedance2.0fast]
   --duration INTEGER          Output length in seconds (4-15). Defaults to ceil(input).
   --fps INTEGER               Output GIF frame rate.  [default: 15]
   --max-width INTEGER         Output GIF max width in pixels.  [default: 600]
-  --poll-seconds INTEGER      Max seconds to wait inline.  [default: 240]
+  --poll-seconds INTEGER      Max seconds to wait for the video task.  [default: 600]
   --help                      Show this message.
 ```
 
@@ -132,9 +131,9 @@ A: 不收。但调用即梦 CLI 会消耗你即梦账号的积分。
 
 - ✅ **v0.1** 开源 CLI 静态图替换（`mycat-meme replace`）
 - ✅ **v0.2** 开源 CLI GIF 替换（`mycat-meme replace-gif`，基于 Seedance 2.0）
+- ✅ **v0.2.1** GIF 流水线重构：单次 multimodal2video 调用 + 强 prompt，剪影场景的外观保持度大幅改善
 
 后续路线图：
-- **v0.2.1** 调 prompt 改善暗色 / 剪影 GIF 的外观保持度
 - **v1.0** 托管站（中文圈，微信登录 + 微信支付）
 - **v1.1** 用户上传自己的表情包库
 

@@ -120,13 +120,6 @@ def replace_cmd(
     help="Where to write the resulting GIF.",
 )
 @click.option(
-    "--style",
-    type=click.Choice(list(available_styles())),
-    default=DEFAULT_STYLE,
-    show_default=True,
-    help="Prompt style for the first-frame replacement step.",
-)
-@click.option(
     "--model",
     "model_version",
     type=click.Choice(
@@ -161,15 +154,14 @@ def replace_cmd(
 @click.option(
     "--poll-seconds",
     type=int,
-    default=240,
+    default=600,
     show_default=True,
-    help="Max seconds to wait inline for dreamina multimodal2video.",
+    help="Max seconds to wait for dreamina multimodal2video to finish.",
 )
 def replace_gif_cmd(
     gif: Path,
     cat: Path,
     output: Path,
-    style: str,
     model_version: str,
     duration: int | None,
     output_fps: int,
@@ -183,7 +175,6 @@ def replace_gif_cmd(
             gif=gif,
             cat=cat,
             output=output,
-            style=style,
             model_version=model_version,
             duration=duration,
             output_fps=output_fps,

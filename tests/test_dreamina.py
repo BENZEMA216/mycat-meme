@@ -311,15 +311,16 @@ def test_wait_for_result_raises_on_timeout(monkeypatch):
 
 def test_build_multimodal2video_argv_uses_repeated_flags(tmp_path: Path):
     """multimodal2video uses --image and --video as stringArray (repeated flags),
-    NOT comma-joined like image2image."""
-    image = tmp_path / "first.png"
+    NOT comma-joined like image2image. Multiple inputs use multiple --image."""
+    image1 = tmp_path / "first.png"
+    image2 = tmp_path / "cat.jpg"
     video = tmp_path / "ref.mp4"
-    image.touch()
-    video.touch()
+    for p in (image1, image2, video):
+        p.touch()
 
     argv = build_multimodal2video_argv(
-        image=image,
-        video=video,
+        images=[image1, image2],
+        videos=[video],
         prompt="animate",
         duration=5,
         ratio="16:9",
@@ -331,15 +332,18 @@ def test_build_multimodal2video_argv_uses_repeated_flags(tmp_path: Path):
     assert argv[0] == DREAMINA_BINARY
     assert "multimodal2video" in argv
 
-    # --image should appear once with the resolved path right after
-    image_idx = argv.index("--image")
-    assert argv[image_idx + 1] == str(image.resolve())
-    # next token should NOT be a comma-joined value or another path
-    assert "," not in argv[image_idx + 1]
+    # Two --image flag occurrences expected
+    image_indices = [i for i, t in enumerate(argv) if t == "--image"]
+    assert len(image_indices) == 2
+    assert argv[image_indices[0] + 1] == str(image1.resolve())
+    assert argv[image_indices[1] + 1] == str(image2.resolve())
+    # No comma-joined paths anywhere
+    for i in image_indices:
+        assert "," not in argv[i + 1]
 
-    video_idx = argv.index("--video")
-    assert argv[video_idx + 1] == str(video.resolve())
-    assert "," not in argv[video_idx + 1]
+    video_indices = [i for i, t in enumerate(argv) if t == "--video"]
+    assert len(video_indices) == 1
+    assert argv[video_indices[0] + 1] == str(video.resolve())
 
     assert argv[argv.index("--prompt") + 1] == "animate"
     assert argv[argv.index("--duration") + 1] == "5"
@@ -347,6 +351,27 @@ def test_build_multimodal2video_argv_uses_repeated_flags(tmp_path: Path):
     assert argv[argv.index("--model_version") + 1] == "seedance2.0fast"
     assert argv[argv.index("--video_resolution") + 1] == "720p"
     assert argv[argv.index("--poll") + 1] == "240"
+
+
+def test_build_multimodal2video_argv_image_only(tmp_path: Path):
+    """videos parameter is optional — single image, no video ref."""
+    image = tmp_path / "i.png"
+    image.touch()
+    argv = build_multimodal2video_argv(
+        images=[image],
+        prompt="x",
+        duration=5,
+        ratio="1:1",
+    )
+    assert argv.count("--image") == 1
+    assert argv.count("--video") == 0
+
+
+def test_build_multimodal2video_argv_requires_at_least_one_image():
+    with pytest.raises(ValueError):
+        build_multimodal2video_argv(
+            images=[], videos=[], prompt="x", duration=5, ratio="1:1"
+        )
 
 
 def test_run_multimodal2video_raises_when_dreamina_not_installed(monkeypatch, tmp_path):
@@ -359,7 +384,7 @@ def test_run_multimodal2video_raises_when_dreamina_not_installed(monkeypatch, tm
     video.touch()
     with pytest.raises(DreaminaNotInstalled):
         run_multimodal2video(
-            image=image, video=video, prompt="x", duration=5, ratio="16:9"
+            images=[image], videos=[video], prompt="x", duration=5, ratio="16:9"
         )
 
 
@@ -372,7 +397,7 @@ def test_run_multimodal2video_raises_on_nonzero_exit(monkeypatch, tmp_path):
     video.touch()
     with pytest.raises(DreaminaCallFailed) as exc_info:
         run_multimodal2video(
-            image=image, video=video, prompt="x", duration=5, ratio="16:9"
+            images=[image], videos=[video], prompt="x", duration=5, ratio="16:9"
         )
     assert "quota exceeded" in exc_info.value.stderr
 
@@ -385,7 +410,7 @@ def test_run_multimodal2video_returns_stdout_on_success(monkeypatch, tmp_path):
     image.touch()
     video.touch()
     out = run_multimodal2video(
-        image=image, video=video, prompt="x", duration=5, ratio="16:9"
+        images=[image], videos=[video], prompt="x", duration=5, ratio="16:9"
     )
     assert out == SAMPLE_VIDEO_STDOUT
 
@@ -519,6 +544,7 @@ def test_download_image_raises_on_url_error(monkeypatch, tmp_path: Path):
         raise urllib.error.URLError("network down")
 
     monkeypatch.setattr("urllib.request.urlopen", boom)
+    monkeypatch.setattr("time.sleep", lambda s: None)  # don't actually backoff
 
     with pytest.raises(OutputNotFound):
         download_image("https://example.com/x.png", tmp_path / "out.png")
@@ -531,3 +557,24 @@ def test_download_image_raises_on_http_error(monkeypatch, tmp_path: Path):
     )
     with pytest.raises(OutputNotFound):
         download_image("https://example.com/x.png", tmp_path / "out.png")
+
+
+def test_download_image_retries_transient_url_error(monkeypatch, tmp_path: Path):
+    """download_image should retry transient URLErrors and eventually succeed."""
+    payload = b"\x89PNG fake"
+    call_count = {"n": 0}
+
+    def flaky_urlopen(req, timeout=120):
+        call_count["n"] += 1
+        if call_count["n"] < 3:
+            raise urllib.error.URLError("ssl eof")
+        return _FakeResponse(200, payload)
+
+    monkeypatch.setattr("urllib.request.urlopen", flaky_urlopen)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+
+    dest = tmp_path / "out.png"
+    result = download_image("https://example.com/x.png", dest)
+    assert result == dest
+    assert dest.read_bytes() == payload
+    assert call_count["n"] == 3
