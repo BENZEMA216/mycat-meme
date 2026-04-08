@@ -1,16 +1,24 @@
-"""Subprocess wrapper for the `dreamina` CLI's image2image command.
+"""Subprocess wrapper for the `dreamina` CLI's generation commands.
 
-Public surface:
-    DREAMINA_BINARY      — name of the binary to invoke (overridable for tests)
-    Image2ImageResult    — dataclass for parsed dreamina output
-    Image2ImageStillPending — raised when dreamina hasn't finished yet
-    build_image2image_argv(...) — pure function returning the argv list
-    run_image2image(...)        — runs subprocess, returns stdout JSON, raises on failure
-    parse_image2image_result(stdout) — parse the JSON, return Image2ImageResult
-    run_query_result(submit_id) — call `dreamina query_result --submit_id=...`
-    wait_for_result(submit_id, max_wait_seconds, poll_interval_seconds)
-                                — poll query_result until success or timeout
-    download_image(url, dest)   — download a remote image URL to a local path
+Public surface (image2image):
+    DREAMINA_BINARY            — name of the binary to invoke (overridable)
+    Image2ImageResult          — dataclass for parsed image2image output
+    Image2ImageStillPending    — raised when dreamina hasn't finished yet
+    build_image2image_argv(...)
+    run_image2image(...)
+    parse_image2image_result(stdout)
+    wait_for_result(submit_id, ...)
+    download_image(url, dest)
+
+Public surface (multimodal2video — v0.2):
+    VideoResult                — dataclass for parsed video output
+    build_multimodal2video_argv(...)
+    run_multimodal2video(...)
+    parse_video_result(stdout)
+    wait_for_video_result(submit_id, ...)
+
+Shared:
+    run_query_result(submit_id) — generic query_result subprocess wrapper
 
 See notes/dreamina-image2image-probe.md for the empirical contract this module
 implements.
@@ -63,6 +71,20 @@ class Image2ImageResult:
     image_url: str
     width: int
     height: int
+
+
+@dataclass(frozen=True)
+class VideoResult:
+    """Parsed result of a successful video-generating dreamina call
+    (image2video, multimodal2video, etc.)."""
+
+    submit_id: str
+    video_url: str
+    width: int
+    height: int
+    fps: float
+    duration_seconds: float
+    format: str  # typically "mp4"
 
 
 def build_image2image_argv(
@@ -198,6 +220,182 @@ def parse_image2image_result(stdout: str) -> Image2ImageResult:
         width=int(first.get("width", 0)),
         height=int(first.get("height", 0)),
     )
+
+
+def parse_video_result(stdout: str) -> VideoResult:
+    """Parse the JSON written by dreamina video commands (image2video,
+    multimodal2video, etc.).
+
+    Expected shape:
+        {
+            "submit_id": "...",
+            "gen_status": "success",
+            "result_json": {
+                "images": [],
+                "videos": [{
+                    "video_url": "https://...",
+                    "fps": 24,
+                    "width": 1112,
+                    "height": 834,
+                    "format": "mp4",
+                    "duration": 5.042
+                }]
+            },
+            ...
+        }
+
+    Raises:
+        OutputNotFound: if the JSON is malformed, status is failure, or no
+            videos are present.
+        Image2ImageStillPending: if status is a pending state. (Same exception
+            class as for image2image — the submit_id semantics are identical.)
+    """
+    try:
+        data = json.loads(stdout)
+    except json.JSONDecodeError as e:
+        raise OutputNotFound(
+            f"dreamina stdout was not valid JSON: {e}\n--- stdout was: ---\n{stdout[:500]}"
+        ) from e
+
+    gen_status = data.get("gen_status")
+    submit_id = data.get("submit_id", "")
+
+    if gen_status in _PENDING_STATUSES:
+        raise Image2ImageStillPending(submit_id=submit_id, gen_status=gen_status)
+
+    if gen_status != "success":
+        fail_reason = data.get("fail_reason", "")
+        raise OutputNotFound(
+            f"dreamina gen_status was {gen_status!r} (expected 'success'); "
+            f"fail_reason: {fail_reason}; full response: {stdout[:500]}"
+        )
+
+    videos = (data.get("result_json") or {}).get("videos") or []
+    if not videos:
+        raise OutputNotFound(
+            f"dreamina returned no videos in result_json.videos; "
+            f"full response: {stdout[:500]}"
+        )
+
+    first = videos[0]
+    video_url = first.get("video_url")
+    if not video_url:
+        raise OutputNotFound(
+            f"dreamina video entry has no video_url; full response: {stdout[:500]}"
+        )
+
+    return VideoResult(
+        submit_id=submit_id,
+        video_url=video_url,
+        width=int(first.get("width", 0)),
+        height=int(first.get("height", 0)),
+        fps=float(first.get("fps", 0) or 0),
+        duration_seconds=float(first.get("duration", 0) or 0),
+        format=str(first.get("format", "mp4")),
+    )
+
+
+def build_multimodal2video_argv(
+    *,
+    image: Path,
+    video: Path,
+    prompt: str,
+    duration: int,
+    ratio: str,
+    model_version: str = "seedance2.0fast",
+    video_resolution: str = "720p",
+    poll_seconds: int = 240,
+) -> list[str]:
+    """Build argv for `dreamina multimodal2video`.
+
+    Unlike image2image (which takes comma-joined `--images`), multimodal2video
+    uses **repeated** `--image` and `--video` flags (cobra stringArray).
+    """
+    return [
+        DREAMINA_BINARY,
+        "multimodal2video",
+        "--image",
+        str(Path(image).resolve()),
+        "--video",
+        str(Path(video).resolve()),
+        "--prompt",
+        prompt,
+        "--duration",
+        str(duration),
+        "--ratio",
+        ratio,
+        "--video_resolution",
+        video_resolution,
+        "--model_version",
+        model_version,
+        "--poll",
+        str(poll_seconds),
+    ]
+
+
+def run_multimodal2video(
+    *,
+    image: Path,
+    video: Path,
+    prompt: str,
+    duration: int,
+    ratio: str,
+    model_version: str = "seedance2.0fast",
+    video_resolution: str = "720p",
+    poll_seconds: int = 240,
+) -> str:
+    """Run `dreamina multimodal2video` and return its stdout JSON.
+
+    Raises:
+        DreaminaNotInstalled: if dreamina is not on PATH.
+        DreaminaCallFailed: on non-zero exit.
+    """
+    argv = build_multimodal2video_argv(
+        image=image,
+        video=video,
+        prompt=prompt,
+        duration=duration,
+        ratio=ratio,
+        model_version=model_version,
+        video_resolution=video_resolution,
+        poll_seconds=poll_seconds,
+    )
+    try:
+        result = subprocess.run(
+            argv, capture_output=True, text=True, check=False
+        )
+    except FileNotFoundError as e:
+        raise DreaminaNotInstalled(
+            f"dreamina CLI not found on PATH (looked for {DREAMINA_BINARY!r})"
+        ) from e
+    if result.returncode != 0:
+        raise DreaminaCallFailed(returncode=result.returncode, stderr=result.stderr)
+    return result.stdout
+
+
+def wait_for_video_result(
+    submit_id: str,
+    *,
+    max_wait_seconds: int = 600,
+    poll_interval_seconds: float = 5.0,
+) -> VideoResult:
+    """Like wait_for_result, but parses the result as a video.
+
+    Used after multimodal2video / image2video when the initial poll times out.
+    """
+    deadline = time.monotonic() + max_wait_seconds
+    while True:
+        stdout = run_query_result(submit_id)
+        try:
+            return parse_video_result(stdout)
+        except Image2ImageStillPending:
+            pass
+        if time.monotonic() >= deadline:
+            raise OutputNotFound(
+                f"dreamina video task {submit_id!r} did not finish within "
+                f"{max_wait_seconds}s; last stdout: {stdout[:500]}"
+            )
+        time.sleep(poll_interval_seconds)
 
 
 def run_query_result(submit_id: str) -> str:

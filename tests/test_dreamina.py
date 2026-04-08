@@ -16,17 +16,47 @@ from mycat_meme.dreamina import (
     DREAMINA_BINARY,
     Image2ImageResult,
     Image2ImageStillPending,
+    VideoResult,
     build_image2image_argv,
+    build_multimodal2video_argv,
     download_image,
     parse_image2image_result,
+    parse_video_result,
     run_image2image,
+    run_multimodal2video,
     run_query_result,
     wait_for_result,
+    wait_for_video_result,
 )
 from mycat_meme.errors import (
     DreaminaCallFailed,
     DreaminaNotInstalled,
     OutputNotFound,
+)
+
+
+# A canonical successful video response (from the image2video probe).
+SAMPLE_VIDEO_STDOUT = json.dumps(
+    {
+        "submit_id": "71f8d7ff781c5444",
+        "prompt": "the cat slowly turns its head",
+        "gen_status": "success",
+        "result_json": {
+            "images": [],
+            "videos": [
+                {
+                    "video_url": "https://v26-artist.vlabvod.com/abc.mp4?x-expires=1",
+                    "fps": 24,
+                    "width": 1112,
+                    "height": 834,
+                    "format": "mp4",
+                    "duration": 5.042,
+                }
+            ],
+        },
+        "credit_count": 10,
+        "queue_info": {"queue_status": "Finish"},
+    }
 )
 
 
@@ -275,6 +305,174 @@ def test_wait_for_result_raises_on_timeout(monkeypatch):
     # Use 0-second budget so the loop times out after exactly one query
     with pytest.raises(OutputNotFound):
         wait_for_result("x", max_wait_seconds=0, poll_interval_seconds=0)
+
+
+# ---------- multimodal2video (v0.2) ----------
+
+def test_build_multimodal2video_argv_uses_repeated_flags(tmp_path: Path):
+    """multimodal2video uses --image and --video as stringArray (repeated flags),
+    NOT comma-joined like image2image."""
+    image = tmp_path / "first.png"
+    video = tmp_path / "ref.mp4"
+    image.touch()
+    video.touch()
+
+    argv = build_multimodal2video_argv(
+        image=image,
+        video=video,
+        prompt="animate",
+        duration=5,
+        ratio="16:9",
+        model_version="seedance2.0fast",
+        video_resolution="720p",
+        poll_seconds=240,
+    )
+
+    assert argv[0] == DREAMINA_BINARY
+    assert "multimodal2video" in argv
+
+    # --image should appear once with the resolved path right after
+    image_idx = argv.index("--image")
+    assert argv[image_idx + 1] == str(image.resolve())
+    # next token should NOT be a comma-joined value or another path
+    assert "," not in argv[image_idx + 1]
+
+    video_idx = argv.index("--video")
+    assert argv[video_idx + 1] == str(video.resolve())
+    assert "," not in argv[video_idx + 1]
+
+    assert argv[argv.index("--prompt") + 1] == "animate"
+    assert argv[argv.index("--duration") + 1] == "5"
+    assert argv[argv.index("--ratio") + 1] == "16:9"
+    assert argv[argv.index("--model_version") + 1] == "seedance2.0fast"
+    assert argv[argv.index("--video_resolution") + 1] == "720p"
+    assert argv[argv.index("--poll") + 1] == "240"
+
+
+def test_run_multimodal2video_raises_when_dreamina_not_installed(monkeypatch, tmp_path):
+    def boom(*a, **kw):
+        raise FileNotFoundError("nope")
+    monkeypatch.setattr(subprocess, "run", boom)
+    image = tmp_path / "i.png"
+    video = tmp_path / "v.mp4"
+    image.touch()
+    video.touch()
+    with pytest.raises(DreaminaNotInstalled):
+        run_multimodal2video(
+            image=image, video=video, prompt="x", duration=5, ratio="16:9"
+        )
+
+
+def test_run_multimodal2video_raises_on_nonzero_exit(monkeypatch, tmp_path):
+    fake = MagicMock(returncode=1, stdout="", stderr="quota exceeded")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: fake)
+    image = tmp_path / "i.png"
+    video = tmp_path / "v.mp4"
+    image.touch()
+    video.touch()
+    with pytest.raises(DreaminaCallFailed) as exc_info:
+        run_multimodal2video(
+            image=image, video=video, prompt="x", duration=5, ratio="16:9"
+        )
+    assert "quota exceeded" in exc_info.value.stderr
+
+
+def test_run_multimodal2video_returns_stdout_on_success(monkeypatch, tmp_path):
+    fake = MagicMock(returncode=0, stdout=SAMPLE_VIDEO_STDOUT, stderr="")
+    monkeypatch.setattr(subprocess, "run", lambda *a, **kw: fake)
+    image = tmp_path / "i.png"
+    video = tmp_path / "v.mp4"
+    image.touch()
+    video.touch()
+    out = run_multimodal2video(
+        image=image, video=video, prompt="x", duration=5, ratio="16:9"
+    )
+    assert out == SAMPLE_VIDEO_STDOUT
+
+
+# ---------- parse_video_result ----------
+
+def test_parse_video_result_extracts_url_and_dimensions():
+    result = parse_video_result(SAMPLE_VIDEO_STDOUT)
+    assert isinstance(result, VideoResult)
+    assert result.submit_id == "71f8d7ff781c5444"
+    assert result.video_url.startswith("https://")
+    assert result.width == 1112
+    assert result.height == 834
+    assert result.fps == 24
+    assert result.duration_seconds == pytest.approx(5.042)
+    assert result.format == "mp4"
+
+
+def test_parse_video_result_raises_on_failure_with_fail_reason():
+    bad = json.dumps(
+        {
+            "submit_id": "x",
+            "gen_status": "fail",
+            "fail_reason": "model unavailable",
+            "result_json": {"images": [], "videos": []},
+        }
+    )
+    with pytest.raises(OutputNotFound) as exc_info:
+        parse_video_result(bad)
+    assert "model unavailable" in str(exc_info.value)
+
+
+def test_parse_video_result_raises_on_empty_videos():
+    bad = json.dumps(
+        {
+            "submit_id": "x",
+            "gen_status": "success",
+            "result_json": {"images": [], "videos": []},
+        }
+    )
+    with pytest.raises(OutputNotFound):
+        parse_video_result(bad)
+
+
+@pytest.mark.parametrize("pending_status", ["querying", "pending", "queueing", "processing"])
+def test_parse_video_result_raises_pending(pending_status):
+    pending = json.dumps(
+        {
+            "submit_id": "abc123",
+            "gen_status": pending_status,
+            "queue_info": {"queue_status": "Generating"},
+        }
+    )
+    with pytest.raises(Image2ImageStillPending) as exc_info:
+        parse_video_result(pending)
+    assert exc_info.value.submit_id == "abc123"
+
+
+def test_parse_video_result_raises_on_invalid_json():
+    with pytest.raises(OutputNotFound):
+        parse_video_result("not json at all")
+
+
+# ---------- wait_for_video_result ----------
+
+def test_wait_for_video_result_returns_when_status_becomes_success(monkeypatch):
+    pending = json.dumps({"submit_id": "x", "gen_status": "querying"})
+    call_count = {"n": 0}
+
+    def fake_run(submit_id):
+        call_count["n"] += 1
+        return pending if call_count["n"] < 2 else SAMPLE_VIDEO_STDOUT
+
+    monkeypatch.setattr(dreamina_mod, "run_query_result", fake_run)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+
+    result = wait_for_video_result("x", max_wait_seconds=60, poll_interval_seconds=0)
+    assert result.video_url.startswith("https://")
+    assert call_count["n"] == 2
+
+
+def test_wait_for_video_result_raises_on_timeout(monkeypatch):
+    pending = json.dumps({"submit_id": "x", "gen_status": "querying"})
+    monkeypatch.setattr(dreamina_mod, "run_query_result", lambda sid: pending)
+    monkeypatch.setattr("time.sleep", lambda s: None)
+    with pytest.raises(OutputNotFound):
+        wait_for_video_result("x", max_wait_seconds=0, poll_interval_seconds=0)
 
 
 # ---------- download_image ----------
