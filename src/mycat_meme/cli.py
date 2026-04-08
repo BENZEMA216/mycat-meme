@@ -55,9 +55,10 @@ def main() -> None:
 @click.option(
     "--poll-seconds",
     type=int,
-    default=60,
+    default=180,
     show_default=True,
-    help="Max seconds to wait inline for dreamina to finish.",
+    help="Max seconds to wait inline for dreamina image2image. After this, the "
+         "pipeline falls back to query_result polling for up to 5 more minutes.",
 )
 def replace_cmd(
     meme: Path, cat: Path, output: Path, style: str, poll_seconds: int

@@ -1,23 +1,24 @@
 """High-level pipeline that orchestrates ratio detection, prompt selection,
-dreamina invocation, and copying the result to the user's output path.
+dreamina invocation, JSON parsing, and downloading the result image.
 """
 from __future__ import annotations
 
-import shutil
 from pathlib import Path
 
-from mycat_meme.dreamina import locate_output_image, run_image2image
+from mycat_meme.dreamina import (
+    Image2ImageStillPending,
+    download_image,
+    parse_image2image_result,
+    run_image2image,
+    wait_for_result,
+)
 from mycat_meme.prompts import DEFAULT_STYLE, get_prompt
 from mycat_meme.ratio import ratio_for_image
 
-DEFAULT_POLL_SECONDS = 60
-
-# Directories where dreamina is known to drop output artifacts.
-# Adjust based on Task 0 probe findings (TODO once probe is run).
-_DREAMINA_OUTPUT_SEARCH_DIRS: tuple[Path, ...] = (
-    Path.home() / ".dreamina_cli" / "runs",
-    Path.cwd(),
-)
+# 180s is enough for most cat-replacement runs on the high_aes_general_v50
+# queue. If dreamina still isn't done by then, the pipeline falls through
+# to wait_for_result which polls query_result for up to 5 more minutes.
+DEFAULT_POLL_SECONDS = 180
 
 
 def replace(
@@ -44,8 +45,8 @@ def replace(
         FileNotFoundError: if meme or cat does not exist.
         DreaminaNotInstalled: if the dreamina CLI is not on PATH.
         DreaminaCallFailed: if dreamina returns a non-zero exit code.
-        OutputNotFound: if dreamina succeeded but the result file could not
-            be located on disk.
+        OutputNotFound: if dreamina succeeded but the result could not be
+            parsed or downloaded.
     """
     meme = Path(meme)
     cat = Path(cat)
@@ -67,11 +68,12 @@ def replace(
         poll_seconds=poll_seconds,
     )
 
-    located = locate_output_image(
-        stdout=stdout,
-        search_dirs=_DREAMINA_OUTPUT_SEARCH_DIRS,
-    )
+    try:
+        result = parse_image2image_result(stdout)
+    except Image2ImageStillPending as pending:
+        # The initial poll timed out before dreamina finished. Fall back to
+        # query_result polling for up to 5 more minutes.
+        result = wait_for_result(pending.submit_id)
 
-    output.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copyfile(located, output)
+    download_image(result.image_url, output)
     return output

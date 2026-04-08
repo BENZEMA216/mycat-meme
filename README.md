@@ -2,7 +2,20 @@
 
 > 把热门表情包里的猫，换成你家猫。30 秒一张，由 [即梦 CLI](https://github.com/<dreamina-cli-repo>) 驱动。
 
-> 🚧 **示例图待补**：等 `dreamina login` 设置好之后，这里会放一组真实的 before / cat / after 三联图。
+<table>
+  <tr>
+    <td align="center"><b>原图（meme）</b></td>
+    <td align="center"><b>我家猫</b></td>
+    <td align="center"><b>替换后</b></td>
+  </tr>
+  <tr>
+    <td><img src="examples/before.jpg" width="280" alt="原版表情包"></td>
+    <td><img src="examples/cat.jpg" width="280" alt="我家猫"></td>
+    <td><img src="examples/after.jpg" width="280" alt="替换后"></td>
+  </tr>
+</table>
+
+> 演示图：左边是黑猫剪影在巷子里走的原图，中间是用户的猫照片，右边是 mycat-meme 输出——同一条巷子、同一姿势、同一光影，但猫被换成了与第二张照片里相似的黑白花猫。一次调用，约 60-90 秒。
 
 ## 这是什么
 
@@ -47,7 +60,7 @@ mycat-meme replace [OPTIONS] MEME CAT
 Options:
   -o, --output PATH           Where to write the result.  [required]
   --style [default]           Prompt style.  [default: default]
-  --poll-seconds INTEGER      Max seconds to wait inline.  [default: 60]
+  --poll-seconds INTEGER      Max seconds to wait inline.  [default: 180]
   --help                      Show this message.
 ```
 
