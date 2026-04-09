@@ -120,6 +120,16 @@ def replace_cmd(
     help="Where to write the resulting GIF.",
 )
 @click.option(
+    "--description",
+    "-d",
+    type=str,
+    default=None,
+    help="Short description of your cat (breed / fur length / color / face "
+         "shape). Injected into the multimodal prompt so dreamina preserves "
+         "breed-level features. Strongly recommended for non-generic cats. "
+         "Example: --description '金色长毛虎斑小奶猫，蓬松长毛，圆脸幼态'",
+)
+@click.option(
     "--model",
     "model_version",
     type=click.Choice(
@@ -162,6 +172,7 @@ def replace_gif_cmd(
     gif: Path,
     cat: Path,
     output: Path,
+    description: str | None,
     model_version: str,
     duration: int | None,
     output_fps: int,
@@ -169,12 +180,16 @@ def replace_gif_cmd(
     poll_seconds: int,
 ) -> None:
     """Replace the cat in GIF with the cat photo in CAT, write to -o OUT.gif."""
-    click.echo(f"replacing... (gif={gif.name}, cat={cat.name}, model={model_version})")
+    desc_str = f", desc='{description}'" if description else ""
+    click.echo(
+        f"replacing... (gif={gif.name}, cat={cat.name}, model={model_version}{desc_str})"
+    )
     try:
         result = pipeline_replace_gif(
             gif=gif,
             cat=cat,
             output=output,
+            description=description,
             model_version=model_version,
             duration=duration,
             output_fps=output_fps,

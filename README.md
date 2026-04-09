@@ -93,6 +93,13 @@ Options:
 mycat-meme replace-gif <表情包.gif> <我家猫.jpg> -o <输出.gif>
 ```
 
+**强烈推荐加 `--description`**（`-d`）描述你家猫的品种和毛色，否则模型容易默认产出通用橘虎斑短毛猫：
+
+```bash
+mycat-meme replace-gif meme.gif my-cat.jpg -o out.gif \
+  -d "金色长毛小奶猫，蓬松长毛，圆脸幼态"
+```
+
 完整选项：
 
 ```
@@ -102,6 +109,11 @@ mycat-meme replace-gif [OPTIONS] GIF CAT
 
 Options:
   -o, --output PATH           Where to write the result GIF.  [required]
+  -d, --description TEXT      Short description of your cat (breed / fur
+                              length / color). Strongly recommended — without
+                              it the model reverts to a generic orange tabby
+                              regardless of your reference photo.
+                              Example: "金色长毛虎斑小奶猫，蓬松长毛，圆脸幼态"
   --model [seedance2.0fast|seedance2.0|seedance2.0_vip|seedance2.0fast_vip]
                               dreamina seedance video model.  [default: seedance2.0fast]
   --duration INTEGER          Output length in seconds (4-15). Defaults to ceil(input).
@@ -112,6 +124,8 @@ Options:
 ```
 
 ffmpeg is required for the GIF pipeline (`brew install ffmpeg`).
+
+**为什么需要 --description？** 实测发现 `multimodal2video` 有个怪脾气：就算把你家猫的照片放在第一位，prompt 写得再严厉，模型还是会默认输出一只"通用橘虎斑短毛猫"。只有在 prompt 里明确写出品种/毛色 keywords 才能锁住特征。长期方案是接入 VLM 自动识别（v0.3+），短期用 `--description` 手动描述最可靠。
 
 ## FAQ
 
@@ -131,9 +145,11 @@ A: 不收。但调用即梦 CLI 会消耗你即梦账号的积分。
 
 - ✅ **v0.1** 开源 CLI 静态图替换（`mycat-meme replace`）
 - ✅ **v0.2** 开源 CLI GIF 替换（`mycat-meme replace-gif`，基于 Seedance 2.0）
-- ✅ **v0.2.1** GIF 流水线重构：单次 multimodal2video 调用 + 强 prompt，剪影场景的外观保持度大幅改善
+- ✅ **v0.2.1** GIF 流水线重构：单次 multimodal2video 调用 + 强 prompt
+- ✅ **v0.2.2** 三大修复：(1) 小 GIF（<640²）的尺寸约束归一化、(2) 下载 IncompleteRead 重试、(3) 新增 `--description` 让模型保留品种级特征
 
 后续路线图：
+- **v0.3** 自动 VLM 描述生成（接 Claude vision API），免去 `--description` 手写
 - **v1.0** 托管站（中文圈，微信登录 + 微信支付）
 - **v1.1** 用户上传自己的表情包库
 

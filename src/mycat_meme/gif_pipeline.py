@@ -61,6 +61,8 @@ import math
 import tempfile
 from pathlib import Path
 
+from PIL import Image
+
 from mycat_meme.dreamina import (
     Image2ImageStillPending,
     download_image,
@@ -70,12 +72,30 @@ from mycat_meme.dreamina import (
 )
 from mycat_meme.errors import DreaminaCallFailed, OutputNotFound
 from mycat_meme.gif import (
+    _dreamina_safe_image_dimensions,
     convert_mp4_to_gif,
     convert_to_mp4,
     extract_first_frame,
     probe_video,
 )
 from mycat_meme.ratio import VIDEO_SUPPORTED_RATIOS, detect_ratio
+
+
+def _normalize_image_for_dreamina(src: Path, dest: Path) -> Path:
+    """Re-save `src` as a JPEG that satisfies dreamina multimodal2video's
+    --image input constraints (size, aspect ratio).
+
+    Small images get upscaled with lanczos, big images downscaled. Output is
+    always JPEG quality 92.
+    """
+    with Image.open(src) as img:
+        img = img.convert("RGB")
+        target_w, target_h = _dreamina_safe_image_dimensions(img.width, img.height)
+        if (target_w, target_h) != img.size:
+            img = img.resize((target_w, target_h), Image.LANCZOS)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        img.save(dest, "JPEG", quality=92, optimize=True)
+    return dest
 
 # Default seedance model — fastest of the seedance2.0 family. Quality is
 # good enough for cat memes and round-trip is well under 6 minutes.
@@ -89,23 +109,44 @@ DEFAULT_OUTPUT_MAX_WIDTH = 600
 MIN_VIDEO_DURATION = 4
 MAX_VIDEO_DURATION = 15
 
-# The multimodal video prompt. v0.2.1 made this much more aggressive than
-# v0.2.0 because the model was reverting to the motion reference's cat
-# appearance (silhouettes), losing the user's cat features.
+# The multimodal video prompt template.
 #
-# This prompt explicitly tells the model:
-# 1. The output cat must look like the cat in the SECOND image (the user's cat)
-# 2. The first image only provides scene/composition
-# 3. The video only provides motion timing
-# 4. The cat must NOT be a silhouette or pure black
-_VIDEO_PROMPT = (
-    "输出视频中的猫必须严格按照第二张参考图中的猫的样子——"
-    "保留第二张图里猫的毛色、花纹、白色胸部和爪子（如果有）、"
-    "面部特征、品种。第一张参考图只提供场景和构图。"
-    "参考视频提供动作时序和镜头运动。"
-    "绝对不要让输出的猫变成剪影或纯黑色，"
-    "必须像第二张图里的猫一样清晰可见，有正常的光照和色彩。"
+# EMPIRICAL RULES (v0.2.2 experimentation, 6 experiments with the same inputs):
+#
+# 1. Image order matters — the first --image is weighted as the primary
+#    appearance reference. Pass the user's cat photo as image 1 and the
+#    first frame of the source GIF as image 2 (scene reference only).
+#
+# 2. Generic prompts are NOT enough. Without explicit cat-specific
+#    descriptors (breed, fur length, color, face shape), the model defaults
+#    to the motion reference's cat appearance even with "cat first"
+#    ordering. Two strong generic prompts were tested and both lost
+#    breed-level features on a golden longhair Persian.
+#
+# 3. Cat-specific descriptors in the prompt DO work. A prompt mentioning
+#    "金色长毛猫"、"蓬松长毛"、"圆脸幼态" preserved the kitten's long fur
+#    and face shape; the same inputs without those keywords gave a generic
+#    orange tabby shorthair.
+#
+# Therefore the gif_pipeline accepts an optional `description` kwarg that
+# the caller (CLI / Python API) can fill in. If provided, it's injected
+# into the prompt near the front so the model "primes" on it.
+_VIDEO_PROMPT_TEMPLATE = (
+    "严禁修改第一张参考图中的猫。{description_clause}"
+    "输出视频里的猫必须是第一张图那只猫本体——一模一样的毛色、毛长、"
+    "品种、花纹、体型、年龄。仅根据参考视频的表情动作让这只猫做出相应的"
+    "面部变化和头部运动。禁止生成任何其他品种或外观的猫。"
+    "场景光线参考第二张图。"
 )
+
+
+def _build_video_prompt(description: str | None) -> str:
+    """Build the multimodal2video prompt, optionally injecting a cat description."""
+    if description and description.strip():
+        clause = f"第一张参考图的猫是：{description.strip()}。"
+    else:
+        clause = ""
+    return _VIDEO_PROMPT_TEMPLATE.format(description_clause=clause)
 
 # Substrings indicating a transient/retryable dreamina backend error.
 _TRANSIENT_ERROR_MARKERS = (
@@ -160,6 +201,7 @@ def replace_gif(
     gif: Path,
     cat: Path,
     output: Path,
+    description: str | None = None,
     model_version: str = DEFAULT_VIDEO_MODEL,
     duration: int | None = None,
     output_fps: int = DEFAULT_OUTPUT_FPS,
@@ -172,6 +214,12 @@ def replace_gif(
         gif: Path to the input GIF (or any animated format ffmpeg can read).
         cat: Path to the user's cat photo.
         output: Where to write the result GIF.
+        description: Optional short text description of the cat (breed, fur
+            length, color, face shape). Injected into the multimodal prompt
+            to help the model preserve breed-level features. Strongly
+            recommended for non-generic cats (long hair, specific breeds,
+            kittens) — empirically the model reverts to generic shorthair
+            tabby without this hint.
         model_version: dreamina seedance2.0 family member.
         duration: Output video length in seconds. If None, derive from input.
         output_fps: GIF frame rate.
@@ -200,13 +248,23 @@ def replace_gif(
 
     with tempfile.TemporaryDirectory(prefix="mycat-meme-") as tmpdir_str:
         tmpdir = Path(tmpdir_str)
-        first_frame = tmpdir / "first.png"
+        first_frame_raw = tmpdir / "first_raw.png"
+        first_frame = tmpdir / "first.jpg"
+        cat_norm = tmpdir / "cat.jpg"
         motion_ref = tmpdir / "motion_ref.mp4"
         result_mp4 = tmpdir / "result.mp4"
 
-        # 1) Extract first frame and convert input to mp4 motion reference
-        extract_first_frame(gif, first_frame)
+        # 1) Extract first frame and convert input to mp4 motion reference.
+        # convert_to_mp4 also enforces dreamina's video size/fps constraints.
+        extract_first_frame(gif, first_frame_raw)
         convert_to_mp4(gif, motion_ref)
+
+        # 1b) Normalize both image inputs to dreamina's image envelope. Without
+        # this, small GIF first frames (e.g. 240x230) and very tall cat photos
+        # (e.g. 1280x2276 portrait) cause dreamina to return 'final generation
+        # failed' from its internal validator.
+        _normalize_image_for_dreamina(first_frame_raw, first_frame)
+        _normalize_image_for_dreamina(cat, cat_norm)
 
         # 2) Probe the motion reference for duration + dimensions
         meta = probe_video(motion_ref)
@@ -221,13 +279,20 @@ def replace_gif(
         )
 
         # 3) One multimodal2video call with all three references in one shot.
+        # IMPORTANT: cat_norm goes FIRST (primary appearance reference),
+        # first_frame goes second (scene/composition reference). v0.2.2
+        # empirically verified that the model weights the first image as
+        # authoritative for appearance. The prompt is also built per-call
+        # so optional cat descriptions get injected.
+        #
         # Pass poll_seconds=0 — dreamina's internal long-poll is unreliable;
         # we poll query_result ourselves below for robustness.
+        prompt = _build_video_prompt(description)
         stdout = _retry_transient(
             lambda: run_multimodal2video(
-                images=[first_frame, cat],
+                images=[cat_norm, first_frame],
                 videos=[motion_ref],
-                prompt=_VIDEO_PROMPT,
+                prompt=prompt,
                 duration=effective_duration,
                 ratio=ratio,
                 model_version=model_version,

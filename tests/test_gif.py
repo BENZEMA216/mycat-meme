@@ -82,10 +82,20 @@ def test_extract_first_frame_raises_on_nonzero_exit(monkeypatch, tmp_path):
 # ---------- convert_to_mp4 ----------
 
 def test_convert_to_mp4_uses_h264_yuv420(monkeypatch, tmp_path: Path):
-    captured = {}
+    """convert_to_mp4 calls ffprobe first to get source dimensions, then ffmpeg
+    with the computed safe target dimensions."""
+    captured: list = []
+    probe_stdout = json.dumps(
+        {
+            "streams": [{"width": 240, "height": 230}],
+            "format": {"duration": "3.0"},
+        }
+    )
 
     def fake_run(argv, **kwargs):
-        captured["argv"] = argv
+        captured.append(argv)
+        if argv[0] == FFPROBE_BINARY:
+            return _ok(stdout=probe_stdout)
         return _ok()
 
     monkeypatch.setattr(subprocess, "run", fake_run)
@@ -96,12 +106,71 @@ def test_convert_to_mp4_uses_h264_yuv420(monkeypatch, tmp_path: Path):
 
     convert_to_mp4(src, dest)
 
-    argv = captured["argv"]
-    assert FFMPEG_BINARY in argv
-    assert "libx264" in argv
-    assert "yuv420p" in argv
-    assert str(src) in argv
-    assert str(dest) in argv
+    # First call should be ffprobe, second should be ffmpeg
+    assert captured[0][0] == FFPROBE_BINARY
+    ffmpeg_argv = captured[1]
+    assert FFMPEG_BINARY in ffmpeg_argv
+    assert "libx264" in ffmpeg_argv
+    assert "yuv420p" in ffmpeg_argv
+    assert str(src) in ffmpeg_argv
+    assert str(dest) in ffmpeg_argv
+    # FPS forced to 30
+    assert "-r" in ffmpeg_argv
+    assert ffmpeg_argv[ffmpeg_argv.index("-r") + 1] == "30"
+    # scale filter present with explicit width:height (not just trunc)
+    vf_idx = ffmpeg_argv.index("-vf")
+    vf = ffmpeg_argv[vf_idx + 1]
+    assert "scale=" in vf
+    assert "lanczos" in vf
+
+
+def test_dreamina_safe_video_dimensions_upscales_small_input():
+    """A 240x230 input must be upscaled so total pixels >= 409600 and edges >= 320."""
+    from mycat_meme.gif import (
+        DREAMINA_VIDEO_MAX_PIXELS,
+        DREAMINA_VIDEO_MIN_EDGE,
+        DREAMINA_VIDEO_MIN_PIXELS,
+        _dreamina_safe_video_dimensions,
+    )
+    w, h = _dreamina_safe_video_dimensions(240, 230)
+    assert w * h >= DREAMINA_VIDEO_MIN_PIXELS
+    assert w * h <= DREAMINA_VIDEO_MAX_PIXELS
+    assert min(w, h) >= DREAMINA_VIDEO_MIN_EDGE
+    # Aspect ratio approximately preserved
+    assert abs((w / h) - (240 / 230)) < 0.1
+    # Even dimensions
+    assert w % 2 == 0
+    assert h % 2 == 0
+
+
+def test_dreamina_safe_image_dimensions_downscales_tall_portrait():
+    """A 1280x2276 portrait must be clamped within image envelope."""
+    from mycat_meme.gif import (
+        DREAMINA_IMAGE_MAX_ASPECT,
+        DREAMINA_IMAGE_MAX_EDGE,
+        DREAMINA_IMAGE_MIN_EDGE,
+        _dreamina_safe_image_dimensions,
+    )
+    w, h = _dreamina_safe_image_dimensions(1280, 2276)
+    assert min(w, h) >= DREAMINA_IMAGE_MIN_EDGE
+    assert max(w, h) <= DREAMINA_IMAGE_MAX_EDGE
+    # The original 1280/2276 = 0.562 is within [0.4, 2.5], so the aspect should
+    # round-trip without clamping
+    assert abs((w / h) - (1280 / 2276)) < 0.05
+
+
+def test_dreamina_safe_image_dimensions_clamps_extreme_aspect():
+    """An aspect outside [0.4, 2.5] gets clamped."""
+    from mycat_meme.gif import (
+        DREAMINA_IMAGE_MAX_ASPECT,
+        DREAMINA_IMAGE_MIN_ASPECT,
+        _dreamina_safe_image_dimensions,
+    )
+    # 100x1000 is aspect 0.1, well below the 0.4 minimum
+    w, h = _dreamina_safe_image_dimensions(100, 1000)
+    # Allow ~0.5% drift from rounding to even pixel dimensions
+    assert (w / h) >= DREAMINA_IMAGE_MIN_ASPECT - 0.005
+    assert (w / h) <= DREAMINA_IMAGE_MAX_ASPECT + 0.005
 
 
 # ---------- convert_mp4_to_gif ----------

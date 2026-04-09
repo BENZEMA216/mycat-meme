@@ -76,9 +76,15 @@ def _stub_pipeline(monkeypatch, captured: dict | None = None):
             captured["gif_max_width"] = max_width
         return Path(dest)
 
+    def fake_normalize_image(src, dest):
+        Path(dest).parent.mkdir(parents=True, exist_ok=True)
+        Path(dest).write_bytes(b"fake normalized jpeg")
+        return Path(dest)
+
     monkeypatch.setattr(gif_pipeline, "extract_first_frame", fake_extract)
     monkeypatch.setattr(gif_pipeline, "convert_to_mp4", fake_convert_to_mp4)
     monkeypatch.setattr(gif_pipeline, "probe_video", fake_probe)
+    monkeypatch.setattr(gif_pipeline, "_normalize_image_for_dreamina", fake_normalize_image)
     monkeypatch.setattr(gif_pipeline, "run_multimodal2video", fake_run_mm2v)
     monkeypatch.setattr(gif_pipeline, "parse_video_result", fake_parse)
     monkeypatch.setattr(gif_pipeline, "download_image", fake_download)
@@ -100,9 +106,10 @@ def test_replace_gif_happy_path(monkeypatch, tmp_path, fake_gif, fake_cat):
     assert captured["gif_max_width"] == gif_pipeline.DEFAULT_OUTPUT_MAX_WIDTH
 
 
-def test_replace_gif_passes_both_images_to_multimodal2video(monkeypatch, tmp_path, fake_gif, fake_cat):
-    """The v0.2.1 pipeline must pass [first_frame, cat] as the images list,
-    and motion_ref.mp4 as the videos list."""
+def test_replace_gif_passes_cat_first_then_first_frame(monkeypatch, tmp_path, fake_gif, fake_cat):
+    """The v0.2.2 pipeline passes [cat, first_frame] as the images list (cat
+    first — the model treats the first image as the primary appearance
+    reference). motion_ref.mp4 goes into videos."""
     captured: dict = {}
     _stub_pipeline(monkeypatch, captured)
 
@@ -113,10 +120,10 @@ def test_replace_gif_passes_both_images_to_multimodal2video(monkeypatch, tmp_pat
     assert "images" in kwargs
     images = kwargs["images"]
     assert len(images) == 2
-    # The user's cat must be the SECOND image (the prompt references "第二张")
-    assert str(images[1]).endswith("cat.jpg") or str(images[1]) == str(fake_cat)
-    # First image is the extracted first frame from the GIF
-    assert "first" in str(images[0]).lower()
+    # The user's cat (normalized) must be FIRST — that's the primary
+    # appearance reference per the v0.2.2 empirical finding.
+    assert "cat" in str(images[0]).lower()
+    assert "first" in str(images[1]).lower()
 
     assert "videos" in kwargs
     assert len(kwargs["videos"]) == 1

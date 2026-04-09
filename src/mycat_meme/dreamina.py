@@ -25,6 +25,7 @@ implements.
 """
 from __future__ import annotations
 
+import http.client
 import json
 import subprocess
 import time
@@ -524,7 +525,11 @@ def download_image(url: str, dest: Path) -> Path:
                 data = resp.read()
             dest.write_bytes(data)
             return dest
-        except (urllib.error.URLError, OSError) as e:
+        except (
+            urllib.error.URLError,
+            http.client.HTTPException,  # includes IncompleteRead, RemoteDisconnected
+            OSError,
+        ) as e:
             last_err = e
             if attempt == _DOWNLOAD_MAX_ATTEMPTS:
                 break
