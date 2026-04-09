@@ -1,0 +1,1268 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>把表情包换成我的猫 · mycat-meme</title>
+<meta name="description" content="把你家猫送进任何表情包。mycat-meme 是一个由即梦 CLI 驱动的开源工具，一条命令生成定制猫咪表情包。">
+
+<meta property="og:title" content="把表情包换成我的猫">
+<meta property="og:description" content="上传一张你家猫的照片，30 秒一张定制表情包。由即梦 CLI 驱动。">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://benzema216.github.io/mycat-meme/">
+<meta property="og:image" content="https://benzema216.github.io/mycat-meme/assets/case3-cat.jpg">
+<meta name="twitter:card" content="summary_large_image">
+
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,300..900;1,9..144,300..900&family=IBM+Plex+Mono:ital,wght@0,400;0,500;1,400&family=Noto+Sans+SC:wght@300;400;500;700&family=Noto+Serif+SC:wght@400;500;700;900&display=swap" rel="stylesheet">
+
+<style>
+  :root {
+    --bg: #FBF9F4;
+    --bg-raised: #F6F2E8;
+    --bg-dark: #1F1B17;
+    --ink: #1A1816;
+    --ink-soft: #3A332C;
+    --ink-muted: #7A7268;
+    --rule: #E5DFD2;
+    --rule-strong: #C9C0AE;
+    --amber: #B8863C;
+    --amber-bright: #D4A34A;
+    --rust: #8B3A2E;
+
+    --font-serif-cn: 'Noto Serif SC', 'Songti SC', serif;
+    --font-sans-cn: 'Noto Sans SC', -apple-system, 'PingFang SC', sans-serif;
+    --font-serif-en: 'Fraunces', Georgia, serif;
+    --font-mono: 'IBM Plex Mono', 'SF Mono', Menlo, monospace;
+
+    --maxw: 1240px;
+    --narrow: 640px;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    scroll-behavior: smooth;
+    font-size: 17px;
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--ink);
+    font-family: var(--font-sans-cn);
+    font-weight: 400;
+    line-height: 1.65;
+    min-height: 100vh;
+    overflow-x: hidden;
+    position: relative;
+  }
+
+  /* Subtle grain overlay across entire page */
+  body::before {
+    content: "";
+    position: fixed;
+    inset: 0;
+    pointer-events: none;
+    z-index: 100;
+    opacity: 0.04;
+    mix-blend-mode: multiply;
+    background-image: url("data:image/svg+xml;utf8,<svg viewBox='0 0 200 200' xmlns='http://www.w3.org/2000/svg'><filter id='n'><feTurbulence type='fractalNoise' baseFrequency='0.9' numOctaves='4' seed='2'/></filter><rect width='100%25' height='100%25' filter='url(%23n)' /></svg>");
+  }
+
+  a { color: inherit; text-decoration: none; }
+  img, video { display: block; max-width: 100%; height: auto; }
+
+  ::selection {
+    background: var(--amber);
+    color: var(--bg);
+  }
+
+  /* ----- Layout primitives ----- */
+
+  .wrap {
+    max-width: var(--maxw);
+    margin: 0 auto;
+    padding: 0 28px;
+  }
+
+  .narrow {
+    max-width: var(--narrow);
+    margin: 0 auto;
+  }
+
+  .rule {
+    height: 1px;
+    background: var(--rule);
+    margin: 0;
+  }
+
+  /* ----- Typography ----- */
+
+  .eyebrow {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    font-weight: 500;
+    letter-spacing: 0.15em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+  }
+
+  .eyebrow .dot {
+    color: var(--amber);
+    margin: 0 0.6em;
+  }
+
+  h1, h2, h3, h4 {
+    font-family: var(--font-serif-cn);
+    font-weight: 700;
+    line-height: 1.1;
+    color: var(--ink);
+  }
+
+  h1 .en, h2 .en, h3 .en {
+    font-family: var(--font-serif-en);
+    font-feature-settings: "ss01", "onum";
+    font-style: italic;
+    font-weight: 400;
+  }
+
+  p { color: var(--ink-soft); }
+
+  .lede {
+    font-family: var(--font-serif-cn);
+    font-size: 1.35rem;
+    line-height: 1.7;
+    color: var(--ink);
+    font-weight: 400;
+  }
+
+  .mono { font-family: var(--font-mono); font-size: 0.82rem; }
+
+  /* ----- Top bar ----- */
+
+  .topbar {
+    padding: 26px 0 0;
+    position: relative;
+    z-index: 2;
+  }
+
+  .topbar .row {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 24px;
+  }
+
+  .mark {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.08em;
+    color: var(--ink);
+  }
+
+  .mark b { color: var(--amber); font-weight: 500; }
+
+  .topbar nav {
+    display: flex;
+    gap: 28px;
+    font-family: var(--font-mono);
+    font-size: 12px;
+    letter-spacing: 0.04em;
+  }
+
+  .topbar nav a {
+    color: var(--ink-muted);
+    transition: color 0.2s;
+  }
+
+  .topbar nav a:hover { color: var(--amber); }
+
+  /* ----- Hero ----- */
+
+  .hero {
+    padding: 100px 0 120px;
+    position: relative;
+  }
+
+  .hero-grid {
+    display: grid;
+    grid-template-columns: 1.1fr 0.9fr;
+    gap: 60px;
+    align-items: center;
+  }
+
+  .hero-text { position: relative; }
+
+  .hero-text .eyebrow { margin-bottom: 24px; display: block; }
+
+  .hero h1 {
+    font-size: clamp(2.6rem, 6.5vw, 5.4rem);
+    letter-spacing: -0.02em;
+    line-height: 1.05;
+    margin-bottom: 32px;
+  }
+
+  .hero h1 em {
+    font-family: var(--font-serif-en);
+    font-style: italic;
+    font-weight: 300;
+    color: var(--amber);
+    font-feature-settings: "ss01";
+  }
+
+  .hero .subhead {
+    font-family: var(--font-serif-cn);
+    font-size: 1.2rem;
+    color: var(--ink-soft);
+    line-height: 1.6;
+    max-width: 460px;
+    margin-bottom: 40px;
+  }
+
+  .hero-ctas {
+    display: flex;
+    gap: 24px;
+    align-items: center;
+    flex-wrap: wrap;
+  }
+
+  .btn {
+    font-family: var(--font-mono);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.06em;
+    text-transform: uppercase;
+    padding: 13px 24px;
+    border: 1.5px solid var(--ink);
+    background: var(--ink);
+    color: var(--bg);
+    transition: all 0.2s ease;
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+  }
+
+  .btn:hover {
+    background: var(--amber);
+    border-color: var(--amber);
+    color: var(--bg);
+  }
+
+  .btn-ghost {
+    background: transparent;
+    color: var(--ink);
+  }
+
+  .btn-ghost:hover {
+    background: var(--ink);
+    color: var(--bg);
+    border-color: var(--ink);
+  }
+
+  .hero-media {
+    position: relative;
+    aspect-ratio: 1 / 1;
+    background: var(--bg-raised);
+    overflow: hidden;
+    border: 1px solid var(--rule);
+    box-shadow: 0 30px 60px -30px rgba(30, 24, 20, 0.35),
+                0 8px 20px -8px rgba(30, 24, 20, 0.15);
+  }
+
+  .hero-media video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .hero-media .tag {
+    position: absolute;
+    top: 18px;
+    left: 18px;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    background: rgba(26, 24, 22, 0.78);
+    color: #F6F2E8;
+    padding: 6px 12px;
+    backdrop-filter: blur(8px);
+  }
+
+  .hero-media .tag b { color: var(--amber-bright); font-weight: 500; }
+
+  /* ----- Narrative intro ----- */
+
+  .intro {
+    padding: 100px 0;
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+    background: var(--bg-raised);
+    position: relative;
+  }
+
+  .intro .narrow {
+    text-align: left;
+  }
+
+  .intro .eyebrow { margin-bottom: 30px; display: block; }
+
+  .intro .lede {
+    font-size: 1.5rem;
+    line-height: 1.75;
+    color: var(--ink);
+  }
+
+  .intro .lede p + p { margin-top: 1.4em; }
+
+  .intro .lede em {
+    font-family: var(--font-serif-en);
+    font-style: italic;
+    color: var(--amber);
+    font-weight: 400;
+  }
+
+  .intro .signoff {
+    margin-top: 48px;
+    padding-top: 24px;
+    border-top: 1px solid var(--rule-strong);
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+  }
+
+  /* ----- Cases ----- */
+
+  .cases { padding: 140px 0 60px; }
+
+  .cases-intro {
+    text-align: center;
+    margin-bottom: 120px;
+  }
+
+  .cases-intro .eyebrow { display: inline-block; margin-bottom: 18px; }
+
+  .cases-intro h2 {
+    font-size: clamp(2rem, 4.2vw, 3.4rem);
+    letter-spacing: -0.01em;
+  }
+
+  .case {
+    padding: 80px 0;
+    position: relative;
+  }
+
+  .case-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 72px;
+    align-items: center;
+  }
+
+  .case.reverse .case-grid {
+    direction: rtl;
+  }
+
+  .case.reverse .case-grid > * {
+    direction: ltr;
+  }
+
+  .case-text { padding-right: 20px; }
+  .case.reverse .case-text { padding-right: 0; padding-left: 20px; }
+
+  .case-num {
+    display: flex;
+    align-items: baseline;
+    gap: 14px;
+    margin-bottom: 28px;
+  }
+
+  .case-num .no {
+    font-family: var(--font-serif-en);
+    font-weight: 300;
+    font-size: 4.2rem;
+    line-height: 0.8;
+    color: var(--amber);
+    font-feature-settings: "onum", "ss01";
+    letter-spacing: -0.02em;
+  }
+
+  .case-num .label {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--rule-strong);
+    padding-right: 30px;
+  }
+
+  .case h3 {
+    font-family: var(--font-serif-cn);
+    font-size: clamp(1.7rem, 3vw, 2.4rem);
+    line-height: 1.2;
+    margin-bottom: 24px;
+    color: var(--ink);
+  }
+
+  .case h3 em {
+    font-family: var(--font-serif-en);
+    font-style: italic;
+    color: var(--amber);
+    font-weight: 400;
+  }
+
+  .case .body {
+    font-family: var(--font-serif-cn);
+    font-size: 1.08rem;
+    line-height: 1.8;
+    color: var(--ink-soft);
+    font-weight: 400;
+  }
+
+  .case .body p + p { margin-top: 1em; }
+
+  .case-meta {
+    margin-top: 36px;
+    padding-top: 22px;
+    border-top: 1px solid var(--rule);
+    display: grid;
+    grid-template-columns: repeat(3, auto);
+    gap: 20px 36px;
+    font-family: var(--font-mono);
+    font-size: 11px;
+  }
+
+  .case-meta dt {
+    color: var(--ink-muted);
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    margin-bottom: 4px;
+  }
+
+  .case-meta dd { color: var(--ink); font-weight: 500; }
+
+  /* Command excerpt in case */
+  .case-cmd {
+    margin-top: 24px;
+    padding: 14px 16px;
+    background: var(--bg-dark);
+    color: #E8DFC9;
+    font-family: var(--font-mono);
+    font-size: 11.5px;
+    line-height: 1.7;
+    overflow-x: auto;
+  }
+
+  .case-cmd .prompt { color: var(--amber-bright); }
+  .case-cmd .arg { color: #B8C7A3; }
+  .case-cmd .str { color: #E8DFC9; }
+
+  /* Case media trio */
+  .case-media {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 10px;
+    position: relative;
+  }
+
+  .case-media figure {
+    position: relative;
+    aspect-ratio: 1 / 1;
+    background: var(--bg-raised);
+    border: 1px solid var(--rule);
+    overflow: hidden;
+  }
+
+  .case-media figure img,
+  .case-media figure video {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+  }
+
+  .case-media figcaption {
+    position: absolute;
+    bottom: 10px;
+    left: 10px;
+    font-family: var(--font-mono);
+    font-size: 9px;
+    letter-spacing: 0.1em;
+    text-transform: uppercase;
+    background: rgba(26, 24, 22, 0.82);
+    color: #F6F2E8;
+    padding: 4px 9px;
+    backdrop-filter: blur(6px);
+  }
+
+  .case-media .arrow {
+    display: none; /* hidden on desktop grid; shown in mobile */
+  }
+
+  /* Case rule-line separator */
+  .case + .case::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: 28px;
+    right: 28px;
+    height: 1px;
+    background: var(--rule);
+  }
+
+  /* ----- How it works ----- */
+
+  .how {
+    padding: 140px 0;
+    background: var(--bg-raised);
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .how .narrow { max-width: 760px; }
+
+  .how .eyebrow { margin-bottom: 18px; display: block; }
+
+  .how h2 {
+    font-size: clamp(2rem, 4vw, 3rem);
+    margin-bottom: 48px;
+    line-height: 1.15;
+  }
+
+  .how ol {
+    list-style: none;
+    counter-reset: step;
+  }
+
+  .how ol li {
+    counter-increment: step;
+    padding: 28px 0;
+    border-top: 1px solid var(--rule-strong);
+    display: grid;
+    grid-template-columns: 60px 1fr;
+    gap: 30px;
+    align-items: baseline;
+  }
+
+  .how ol li:last-child { border-bottom: 1px solid var(--rule-strong); }
+
+  .how ol li::before {
+    content: counter(step, decimal-leading-zero);
+    font-family: var(--font-serif-en);
+    font-size: 2.6rem;
+    font-weight: 300;
+    line-height: 1;
+    color: var(--amber);
+    font-feature-settings: "onum";
+  }
+
+  .how ol li h4 {
+    font-family: var(--font-serif-cn);
+    font-size: 1.2rem;
+    font-weight: 500;
+    margin-bottom: 6px;
+  }
+
+  .how ol li p {
+    font-family: var(--font-serif-cn);
+    font-size: 1rem;
+    line-height: 1.75;
+    color: var(--ink-soft);
+  }
+
+  .how-note {
+    margin-top: 60px;
+    padding: 28px 30px;
+    background: var(--bg);
+    border-left: 3px solid var(--amber);
+    font-family: var(--font-serif-cn);
+    font-size: 0.98rem;
+    line-height: 1.75;
+    color: var(--ink-soft);
+  }
+
+  .how-note strong {
+    color: var(--ink);
+    font-weight: 600;
+  }
+
+  /* ----- Install ----- */
+
+  .install { padding: 140px 0; }
+
+  .install .narrow { max-width: 760px; }
+
+  .install .eyebrow { margin-bottom: 18px; display: block; }
+
+  .install h2 {
+    font-size: clamp(2rem, 4vw, 3rem);
+    margin-bottom: 32px;
+    line-height: 1.15;
+  }
+
+  .install .lede {
+    margin-bottom: 48px;
+  }
+
+  .install-step {
+    margin-bottom: 36px;
+  }
+
+  .install-step .step-label {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.12em;
+    text-transform: uppercase;
+    color: var(--amber);
+    margin-bottom: 10px;
+  }
+
+  .install-step h4 {
+    font-family: var(--font-serif-cn);
+    font-size: 1.15rem;
+    font-weight: 500;
+    margin-bottom: 14px;
+  }
+
+  .code-block {
+    background: var(--bg-dark);
+    color: #E8DFC9;
+    padding: 20px 22px;
+    font-family: var(--font-mono);
+    font-size: 12.5px;
+    line-height: 1.8;
+    overflow-x: auto;
+    position: relative;
+  }
+
+  .code-block .c { color: #7A7268; font-style: italic; }
+  .code-block .k { color: var(--amber-bright); }
+  .code-block .v { color: #B8C7A3; }
+
+  .code-block .copy {
+    position: absolute;
+    top: 10px;
+    right: 10px;
+    background: transparent;
+    color: var(--ink-muted);
+    border: 1px solid #3A332C;
+    font-family: var(--font-mono);
+    font-size: 10px;
+    padding: 4px 8px;
+    cursor: pointer;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    transition: all 0.15s;
+  }
+
+  .code-block .copy:hover {
+    color: var(--amber-bright);
+    border-color: var(--amber);
+  }
+
+  .code-block .copy.copied {
+    color: #B8C7A3;
+    border-color: #B8C7A3;
+  }
+
+  /* ----- Roadmap ----- */
+
+  .roadmap {
+    padding: 140px 0;
+    background: var(--bg-raised);
+    border-top: 1px solid var(--rule);
+    border-bottom: 1px solid var(--rule);
+  }
+
+  .roadmap .narrow { max-width: 760px; }
+
+  .roadmap .eyebrow { margin-bottom: 18px; display: block; }
+
+  .roadmap h2 {
+    font-size: clamp(2rem, 4vw, 3rem);
+    margin-bottom: 48px;
+    line-height: 1.15;
+  }
+
+  .roadmap ul { list-style: none; }
+
+  .roadmap li {
+    padding: 22px 0;
+    border-top: 1px solid var(--rule-strong);
+    display: grid;
+    grid-template-columns: 42px 1fr auto;
+    gap: 20px;
+    align-items: baseline;
+  }
+
+  .roadmap li:last-child { border-bottom: 1px solid var(--rule-strong); }
+
+  .roadmap li .status {
+    font-family: var(--font-mono);
+    font-size: 18px;
+    line-height: 1;
+    color: var(--amber);
+  }
+
+  .roadmap li.todo .status { color: var(--ink-muted); }
+
+  .roadmap li .version {
+    font-family: var(--font-mono);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    color: var(--ink-muted);
+    text-transform: uppercase;
+  }
+
+  .roadmap li h4 {
+    font-family: var(--font-serif-cn);
+    font-size: 1.1rem;
+    font-weight: 500;
+    margin-bottom: 4px;
+  }
+
+  .roadmap li.todo h4 { color: var(--ink-muted); }
+
+  .roadmap li p {
+    font-family: var(--font-serif-cn);
+    font-size: 0.92rem;
+    color: var(--ink-muted);
+  }
+
+  /* ----- Footer ----- */
+
+  footer {
+    padding: 80px 0 60px;
+    border-top: 1px solid var(--rule);
+  }
+
+  .footer-grid {
+    display: grid;
+    grid-template-columns: 1fr 1fr 1fr;
+    gap: 48px;
+    margin-bottom: 60px;
+  }
+
+  .footer-col h5 {
+    font-family: var(--font-mono);
+    font-size: 10px;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    color: var(--ink-muted);
+    margin-bottom: 18px;
+    font-weight: 500;
+  }
+
+  .footer-col ul { list-style: none; }
+
+  .footer-col li {
+    font-family: var(--font-serif-cn);
+    font-size: 0.95rem;
+    color: var(--ink-soft);
+    margin-bottom: 8px;
+  }
+
+  .footer-col a {
+    color: var(--ink-soft);
+    border-bottom: 1px solid transparent;
+    transition: border-color 0.2s, color 0.2s;
+  }
+
+  .footer-col a:hover {
+    color: var(--amber);
+    border-bottom-color: var(--amber);
+  }
+
+  .footer-bottom {
+    padding-top: 30px;
+    border-top: 1px solid var(--rule);
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    font-family: var(--font-mono);
+    font-size: 11px;
+    color: var(--ink-muted);
+    letter-spacing: 0.06em;
+  }
+
+  .footer-bottom .sig {
+    font-family: var(--font-serif-en);
+    font-style: italic;
+    font-size: 1.05rem;
+    color: var(--amber);
+    letter-spacing: 0;
+    text-transform: none;
+  }
+
+  /* ----- Fade-in on scroll ----- */
+
+  .fade {
+    opacity: 0;
+    transform: translateY(18px);
+    transition: opacity 0.8s ease, transform 0.8s ease;
+  }
+  .fade.in {
+    opacity: 1;
+    transform: translateY(0);
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .fade { opacity: 1; transform: none; transition: none; }
+    html { scroll-behavior: auto; }
+  }
+
+  /* ----- Responsive ----- */
+
+  @media (max-width: 860px) {
+    html { font-size: 16px; }
+    .wrap { padding: 0 20px; }
+
+    .hero { padding: 60px 0 80px; }
+    .hero-grid {
+      grid-template-columns: 1fr;
+      gap: 40px;
+    }
+    .hero h1 { font-size: clamp(2.4rem, 10vw, 3.4rem); }
+    .hero .subhead { max-width: none; }
+
+    .intro { padding: 70px 0; }
+    .intro .lede { font-size: 1.2rem; }
+
+    .cases { padding: 80px 0 40px; }
+    .cases-intro { margin-bottom: 70px; }
+
+    .case { padding: 60px 0; }
+    .case-grid {
+      grid-template-columns: 1fr;
+      gap: 40px;
+    }
+    .case.reverse .case-grid { direction: ltr; }
+    .case-text { padding: 0; }
+    .case.reverse .case-text { padding: 0; }
+
+    .case-num .no { font-size: 3.2rem; }
+
+    .case-meta {
+      grid-template-columns: 1fr 1fr;
+      gap: 16px 24px;
+    }
+
+    .how, .install, .roadmap { padding: 80px 0; }
+
+    .footer-grid {
+      grid-template-columns: 1fr;
+      gap: 36px;
+    }
+
+    .footer-bottom {
+      flex-direction: column;
+      gap: 16px;
+      align-items: flex-start;
+    }
+  }
+
+  @media (max-width: 520px) {
+    .topbar nav { display: none; }
+    .hero h1 { font-size: 2.6rem; }
+
+    .case-media { gap: 6px; }
+    .case-media figcaption { font-size: 8px; padding: 3px 6px; }
+
+    .roadmap li {
+      grid-template-columns: 36px 1fr;
+      gap: 14px;
+    }
+    .roadmap li .version {
+      grid-column: 2;
+      margin-top: 4px;
+    }
+  }
+</style>
+</head>
+<body>
+
+<header class="topbar">
+  <div class="wrap row">
+    <div class="mark">MYCAT-MEME <b>·</b> v0.2.2</div>
+    <nav>
+      <a href="#cases">案例</a>
+      <a href="#how">原理</a>
+      <a href="#install">安装</a>
+      <a href="https://github.com/BENZEMA216/mycat-meme" target="_blank" rel="noopener">GitHub ↗</a>
+    </nav>
+  </div>
+</header>
+
+<section class="hero">
+  <div class="wrap">
+    <div class="hero-grid">
+      <div class="hero-text fade">
+        <div class="eyebrow">一个开源工具 <span class="dot">·</span> 由即梦 CLI 驱动</div>
+        <h1>把你家猫，<br>送进<em>任何</em><br>表情包。</h1>
+        <p class="subhead">上传一张照片，一条命令，30 秒一张定制表情包。完全开源，在你自己的命令行里跑。</p>
+        <div class="hero-ctas">
+          <a class="btn" href="https://github.com/BENZEMA216/mycat-meme" target="_blank" rel="noopener">
+            Star on GitHub
+          </a>
+          <a class="btn btn-ghost" href="#install">快速开始 →</a>
+        </div>
+      </div>
+      <div class="hero-media fade">
+        <video src="assets/hero.mp4" autoplay muted loop playsinline poster="assets/case3-cat.jpg"></video>
+        <div class="tag">v0.2.2 <b>·</b> live output</div>
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="intro">
+  <div class="wrap narrow fade">
+    <div class="eyebrow">Field notes</div>
+    <div class="lede">
+      <p>昨晚我花了两小时，把我家金渐层小奶猫做成了那只<em>挤眉弄眼</em>的橘猫 meme。</p>
+      <p>效果比预期好——眼睛是我家猫的眼睛，长毛还是我家猫的长毛，脸还是那张圆圆的幼猫脸。但它确实在挤眉弄眼。</p>
+      <p>这个 repo 就是那两小时的产物。</p>
+    </div>
+    <div class="signoff">BENZEMA216 <span style="color: var(--amber)">·</span> 2026-04-09</div>
+  </div>
+</section>
+
+<section id="cases" class="cases">
+  <div class="wrap">
+    <div class="cases-intro fade">
+      <div class="eyebrow">真实案例 <span class="dot">·</span> three stories</div>
+      <h2>三次替换，<br>从简单到棘手。</h2>
+    </div>
+
+    <!-- Case 01 -->
+    <article class="case">
+      <div class="wrap">
+        <div class="case-grid">
+          <div class="case-text fade">
+            <div class="case-num">
+              <div class="no">01</div>
+              <div class="label">案例 · Static image</div>
+            </div>
+            <h3>凌晨的巷子，<br>换一只<em>新猫</em></h3>
+            <div class="body">
+              <p>一张剪影猫在夜晚巷子里走路的照片。主角换成另一只看起来完全不同的花猫——同样的光影、同样的姿势、地面的水渍反光、墙上的电线，都原样保留。</p>
+              <p>只是走路的那位换了。</p>
+            </div>
+            <dl class="case-meta">
+              <div><dt>Command</dt><dd>replace</dd></div>
+              <div><dt>Duration</dt><dd>约 60 秒</dd></div>
+              <div><dt>Credits</dt><dd>~10</dd></div>
+            </dl>
+          </div>
+          <div class="case-media fade">
+            <figure>
+              <img src="assets/case1-before.jpg" alt="原 meme" loading="lazy">
+              <figcaption>01 / before</figcaption>
+            </figure>
+            <figure>
+              <img src="assets/case1-cat.jpg" alt="我的猫" loading="lazy">
+              <figcaption>02 / my cat</figcaption>
+            </figure>
+            <figure>
+              <img src="assets/case1-after.jpg" alt="替换后" loading="lazy">
+              <figcaption>03 / after</figcaption>
+            </figure>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <!-- Case 02 -->
+    <article class="case reverse">
+      <div class="wrap">
+        <div class="case-grid">
+          <div class="case-text fade">
+            <div class="case-num">
+              <div class="no">02</div>
+              <div class="label">案例 · Animated GIF</div>
+            </div>
+            <h3>同一个 meme，<br>这次<em>动</em>起来</h3>
+            <div class="body">
+              <p>静态图里看不出来的脚步节奏、尾巴摆动、影子的起伏——换成新猫之后动起来，气质完全不一样。</p>
+              <p>这是 v0.2 才支持的。靠的是即梦的 multimodal2video 把「首帧 / 你的猫 / 原 GIF 的运动」三路引用一次性融合。</p>
+            </div>
+            <dl class="case-meta">
+              <div><dt>Command</dt><dd>replace-gif</dd></div>
+              <div><dt>Duration</dt><dd>约 5 分钟</dd></div>
+              <div><dt>Model</dt><dd>seedance2.0fast</dd></div>
+            </dl>
+          </div>
+          <div class="case-media fade">
+            <figure>
+              <video src="assets/case2-before.mp4" autoplay muted loop playsinline></video>
+              <figcaption>01 / before</figcaption>
+            </figure>
+            <figure>
+              <img src="assets/case2-cat.jpg" alt="我的猫" loading="lazy">
+              <figcaption>02 / my cat</figcaption>
+            </figure>
+            <figure>
+              <video src="assets/case2-after.mp4" autoplay muted loop playsinline></video>
+              <figcaption>03 / after</figcaption>
+            </figure>
+          </div>
+        </div>
+      </div>
+    </article>
+
+    <!-- Case 03 -->
+    <article class="case">
+      <div class="wrap">
+        <div class="case-grid">
+          <div class="case-text fade">
+            <div class="case-num">
+              <div class="no">03</div>
+              <div class="label">案例 · The hardest one</div>
+            </div>
+            <h3>挤眉弄眼，<br>但换成<em>金渐层</em></h3>
+            <div class="body">
+              <p>这是整个项目最棘手的一个 case——源 meme 是一只橘猫的脸部特写，在做极其精细的挤眼鼓脸微表情。没有"场景"，没有"动作幅度"，只有一张脸和一个 vibes。</p>
+              <p>要求模型保留这个微表情，同时把猫换成一只完全不同品种的金色长毛小奶猫。</p>
+              <p>这一版跑了 <em>7 次实验、3 次彻底失败</em>，才找到 <code style="font-family: var(--font-mono); background: var(--bg-raised); padding: 2px 6px; font-size: 0.88em; border: 1px solid var(--rule);">--description</code> 这个关键开关。详细折腾记录在 v0.2.2 的 commit message 里。</p>
+            </div>
+            <div class="case-cmd">
+<span class="prompt">$</span> mycat-meme replace-gif meme.gif my-cat.jpg \
+    <span class="arg">-d</span> <span class="str">"金色长毛小奶猫，蓬松长毛，圆脸幼态"</span> \
+    <span class="arg">-o</span> <span class="str">out.gif</span>
+            </div>
+            <dl class="case-meta">
+              <div><dt>输入尺寸</dt><dd>240×230</dd></div>
+              <div><dt>迭代次数</dt><dd>7</dd></div>
+              <div><dt>v0.2.2 commits</dt><dd>3</dd></div>
+            </dl>
+          </div>
+          <div class="case-media fade">
+            <figure>
+              <video src="assets/case3-before.mp4" autoplay muted loop playsinline></video>
+              <figcaption>01 / before</figcaption>
+            </figure>
+            <figure>
+              <img src="assets/case3-cat.jpg" alt="我的猫" loading="lazy">
+              <figcaption>02 / my cat</figcaption>
+            </figure>
+            <figure>
+              <video src="assets/case3-after.mp4" autoplay muted loop playsinline></video>
+              <figcaption>03 / after</figcaption>
+            </figure>
+          </div>
+        </div>
+      </div>
+    </article>
+
+  </div>
+</section>
+
+<section id="how" class="how">
+  <div class="wrap narrow fade">
+    <div class="eyebrow">原理 <span class="dot">·</span> how it works</div>
+    <h2>一条流水线，<br><em>三步到底</em>。</h2>
+    <ol>
+      <li>
+        <div>
+          <h4>拆 GIF，准备两个引用</h4>
+          <p>用 ffmpeg 把输入 GIF 提取首帧（静态构图参考），同时转成 h264 mp4（motion reference，给动作信号）。两者都按 dreamina multimodal2video 的硬约束做尺寸归一化。</p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h4>丢给即梦 multimodal2video</h4>
+          <p>把 <em>[你的猫照片, 首帧, motion mp4]</em> 三个引用一次性送到 dreamina 的 Seedance 2.0 Fast 模型。用户的 <code style="font-family: var(--font-mono); font-size: 0.88em;">--description</code> 作为 prompt 锁定品种级特征。</p>
+        </div>
+      </li>
+      <li>
+        <div>
+          <h4>下载 mp4，转回 GIF</h4>
+          <p>下载生成的 mp4（带 IncompleteRead 重试保护），用 ffmpeg 的 palette filter 做 2-pass 优化转回 GIF。全流程 3-5 分钟。</p>
+        </div>
+      </li>
+    </ol>
+    <div class="how-note">
+      <strong>一个坦诚的局限：</strong>multimodal2video 有个怪脾气——只有参考图不够，prompt 里必须明确写出品种 / 毛色 / 毛长这类 keyword，否则模型会默认吐出一只"通用橘虎斑短毛"。所以 CLI 需要手动传 <code style="font-family: var(--font-mono); background: var(--bg-raised); padding: 2px 6px; font-size: 0.88em; border: 1px solid var(--rule);">--description</code>。v0.3 计划用 VLM 自动生成这一步。
+    </div>
+  </div>
+</section>
+
+<section id="install" class="install">
+  <div class="wrap narrow fade">
+    <div class="eyebrow">安装 & 用法 <span class="dot">·</span> get started</div>
+    <h2>五分钟，<br>装完就能跑。</h2>
+    <p class="lede">需要先装即梦 CLI 并登录，然后用 pip 装 mycat-meme。ffmpeg 也是必需的（<code style="font-family: var(--font-mono); background: var(--bg-raised); padding: 2px 6px; font-size: 0.88em; border: 1px solid var(--rule);">brew install ffmpeg</code>）。</p>
+
+    <div class="install-step">
+      <div class="step-label">Step 01 · 装即梦 CLI 并登录</div>
+      <h4>这是工具背后真正干活的引擎</h4>
+      <div class="code-block">
+<button class="copy" data-copy='dreamina login --headless
+dreamina user_credit'>COPY</button>
+<span class="c"># 见即梦 CLI 官方仓库的安装说明</span>
+<span class="k">dreamina</span> login <span class="v">--headless</span>
+<span class="k">dreamina</span> user_credit  <span class="c"># 验证登录 + 查看积分</span>
+      </div>
+    </div>
+
+    <div class="install-step">
+      <div class="step-label">Step 02 · 装 mycat-meme</div>
+      <h4>一条 pip 命令</h4>
+      <div class="code-block">
+<button class="copy" data-copy='pip install mycat-meme'>COPY</button>
+<span class="k">pip</span> install mycat-meme
+      </div>
+    </div>
+
+    <div class="install-step">
+      <div class="step-label">Step 03 · 跑一次看看</div>
+      <h4>静态图 &amp; GIF 两种用法</h4>
+      <div class="code-block">
+<button class="copy" data-copy='mycat-meme replace meme.png my-cat.jpg -o out.png
+mycat-meme replace-gif meme.gif my-cat.jpg -d "金色长毛小奶猫" -o out.gif'>COPY</button>
+<span class="c"># 静态图</span>
+<span class="k">mycat-meme</span> replace meme.png my-cat.jpg <span class="v">-o</span> out.png
+
+<span class="c"># GIF （强烈建议加 -d 描述你家猫）</span>
+<span class="k">mycat-meme</span> replace-gif meme.gif my-cat.jpg \
+  <span class="v">-d</span> <span class="v">"金色长毛小奶猫，蓬松长毛，圆脸幼态"</span> \
+  <span class="v">-o</span> out.gif
+      </div>
+    </div>
+  </div>
+</section>
+
+<section class="roadmap">
+  <div class="wrap narrow fade">
+    <div class="eyebrow">路线图 <span class="dot">·</span> where it's going</div>
+    <h2>已经能做的，<br><em>以及未来的事</em>。</h2>
+    <ul>
+      <li>
+        <div class="status">✓</div>
+        <div>
+          <h4>静态图替换</h4>
+          <p>image2image · 约 1 分钟 · 10 积分</p>
+        </div>
+        <div class="version">v0.1</div>
+      </li>
+      <li>
+        <div class="status">✓</div>
+        <div>
+          <h4>GIF 替换</h4>
+          <p>multimodal2video · 约 5 分钟 · 20 积分</p>
+        </div>
+        <div class="version">v0.2</div>
+      </li>
+      <li>
+        <div class="status">✓</div>
+        <div>
+          <h4>品种保留 + 鲁棒性修复</h4>
+          <p>--description flag · 尺寸归一化 · IncompleteRead 重试</p>
+        </div>
+        <div class="version">v0.2.2</div>
+      </li>
+      <li class="todo">
+        <div class="status">○</div>
+        <div>
+          <h4>VLM 自动生成描述</h4>
+          <p>接 Claude vision 或豆包 · 免去手写 --description</p>
+        </div>
+        <div class="version">v0.3</div>
+      </li>
+      <li class="todo">
+        <div class="status">○</div>
+        <div>
+          <h4>托管站 MVP</h4>
+          <p>微信登录 · 微信支付 · 精选 meme 库 · 中文圈运营</p>
+        </div>
+        <div class="version">v1.0</div>
+      </li>
+    </ul>
+  </div>
+</section>
+
+<footer>
+  <div class="wrap">
+    <div class="footer-grid">
+      <div class="footer-col">
+        <h5>项目</h5>
+        <ul>
+          <li><a href="https://github.com/BENZEMA216/mycat-meme" target="_blank" rel="noopener">GitHub 仓库 ↗</a></li>
+          <li><a href="https://github.com/BENZEMA216/mycat-meme/releases" target="_blank" rel="noopener">Releases ↗</a></li>
+          <li><a href="https://github.com/BENZEMA216/mycat-meme/blob/main/README.md" target="_blank" rel="noopener">README ↗</a></li>
+          <li><a href="https://github.com/BENZEMA216/mycat-meme/issues" target="_blank" rel="noopener">Issues ↗</a></li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h5>技术</h5>
+        <ul>
+          <li>Python 3.11 + click</li>
+          <li>ffmpeg · Pillow</li>
+          <li>即梦 CLI · Seedance 2.0</li>
+          <li>MIT License</li>
+        </ul>
+      </div>
+      <div class="footer-col">
+        <h5>作者</h5>
+        <ul>
+          <li>BENZEMA216 · 字节跳动</li>
+          <li>即梦 CLI 产品经理</li>
+          <li>Shenzhen → 香港</li>
+        </ul>
+      </div>
+    </div>
+
+    <div class="footer-bottom">
+      <div>© 2026 BENZEMA216 <span style="color: var(--amber); margin: 0 8px;">·</span> MIT License <span style="color: var(--amber); margin: 0 8px;">·</span> Powered by 即梦 CLI</div>
+      <div class="sig">made with ♡ for my cat</div>
+    </div>
+  </div>
+</footer>
+
+<script>
+  // Intersection observer for fade-in
+  (function() {
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      document.querySelectorAll('.fade').forEach(el => el.classList.add('in'));
+      return;
+    }
+    const io = new IntersectionObserver((entries) => {
+      entries.forEach(entry => {
+        if (entry.isIntersecting) {
+          entry.target.classList.add('in');
+          io.unobserve(entry.target);
+        }
+      });
+    }, { threshold: 0.15, rootMargin: '0px 0px -60px 0px' });
+    document.querySelectorAll('.fade').forEach(el => io.observe(el));
+  })();
+
+  // Copy buttons
+  document.querySelectorAll('.copy').forEach(btn => {
+    btn.addEventListener('click', async () => {
+      const text = btn.getAttribute('data-copy');
+      try {
+        await navigator.clipboard.writeText(text);
+        const original = btn.textContent;
+        btn.textContent = 'COPIED';
+        btn.classList.add('copied');
+        setTimeout(() => {
+          btn.textContent = original;
+          btn.classList.remove('copied');
+        }, 1400);
+      } catch (e) {
+        console.error('copy failed:', e);
+      }
+    });
+  });
+</script>
+
+</body>
+</html>
