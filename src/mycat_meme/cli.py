@@ -184,6 +184,12 @@ def replace_gif_cmd(
     click.echo(
         f"replacing... (gif={gif.name}, cat={cat.name}, model={model_version}{desc_str})"
     )
+    if not description:
+        click.echo(
+            "💡 Tip: add -d \"your cat description\" for much better breed fidelity\n"
+            "        例: -d \"金色长毛小奶猫，蓬松长毛，圆脸幼态\"\n"
+            "        更多模板见 README 的 'Cat description cheat sheet' 章节"
+        )
     try:
         result = pipeline_replace_gif(
             gif=gif,
